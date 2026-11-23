@@ -33,8 +33,10 @@ jobs:
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > topp.jks
             PASS="$KEYSTORE_PASSWORD"
+            echo "SIGNED=true" >> "$GITHUB_ENV"
           else
-            echo "::warning::Aucune clé dans les secrets : clé temporaire, ces APK ne s'installeront pas par-dessus les versions publiées."
+            echo "SIGNED=false" >> "$GITHUB_ENV"
+            echo "::warning::Aucune clé dans les secrets : build de vérification avec une clé temporaire, rien n'est publié."
             PASS=temporaire
             keytool -genkeypair -keystore topp.jks -alias topp -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass "$PASS" -keypass "$PASS" -dname "CN=Topp"
@@ -64,7 +66,7 @@ jobs:
           path: out/*.apk
 
       - name: Publier la version
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && env.SIGNED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

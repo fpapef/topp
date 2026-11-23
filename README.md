@@ -70,7 +70,7 @@ montre ──(Wear OS, ~14 messages/s)──▶ téléphone ──(Bluetooth LE,
 ./gradlew :mobile:assembleRelease :wear:assembleRelease
 ```
 
-La signature lit `keystore.properties` à la racine (non publié). À chaque tag `v*`, GitHub Actions lance les tests, compile et signe les deux APK, puis les joint à la version.
+La signature lit `keystore.properties` à la racine (non publié). À chaque envoi, GitHub Actions lance les tests et compile les deux APK. Il ne les joint à une version que si la clé de signature est dans les secrets du dépôt.
 
 Les écrans sont vérifiés par des captures générées sans appareil (Robolectric + Roborazzi) :
 
