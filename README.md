@@ -35,7 +35,7 @@ Dans les réglages du téléphone, tu choisis comment s'activent les gestes (un 
 
 Télécharge les deux fichiers de la [dernière version](https://github.com/fpapef/topp/releases/latest).
 
-**Téléphone :** ouvre `Topp-telephone-x.y.apk` et accepte l'installation d'applis de source inconnue. Au premier lancement, autorise « Appareils à proximité », la caméra et le micro.
+**Téléphone :** ouvre `Topp-telephone-x.y.apk` et accepte l'installation d'applis de source inconnue. Au premier lancement, autorise « Appareils à proximité », la caméra et le micro. La position est demandée au premier suivi qui utilise le GPS.
 
 **Montre :** elle s'installe depuis un PC avec les [Android Platform-Tools](https://developer.android.com/tools/releases/platform-tools).
 1. Sur la montre : Paramètres → À propos de la montre → Informations sur le logiciel, touche 5 fois « Version du logiciel ».
@@ -75,7 +75,7 @@ montre ──(Wear OS : joystick, gestes, mouvements, GPS)──▶ téléphone 
 ## Compatibilité
 
 - Conçu pour une Hohem iSteady V3 et une Galaxy Watch 7, avec un téléphone Samsung Galaxy.
-- Téléphone : Android 12 ou plus récent, processeur 64 bits (arm64). Montre : Wear OS 3 ou plus récent.
+- Téléphone : Android 12 ou plus récent, processeur 64 bits (arm64). Montre : Wear OS 3 ou plus récent. Depuis la 1.4.1, le fichier de la montre peut avoir un numéro plus ancien que celui du téléphone : prends simplement les deux fichiers de la dernière version.
 - Les deux applis doivent venir de la même version (même signature) pour se parler.
 
 ## Compiler
@@ -94,6 +94,7 @@ Les écrans sont vérifiés par des captures générées sans appareil (Robolect
 
 ## Versions
 
+- **1.4.1** : détection des personnes plus fiable (secours par l'aperçu, appli non compressée), message clair à l'écran et au journal si la détection ne marche pas.
 - **1.4** : suivi de la personne par la caméra, reconnaissance par la montre, GPS de la montre en renfort, trois modes au choix.
 - **1.3** : pilotage par les gestes du poignet (un appui ou maintenir), bouton Changer de caméra sur la montre.
 - **1.2** : nouvelle interface façon viseur, cadran d'attitude qui suit la nacelle, nouvelle montre.
