@@ -83,7 +83,18 @@ data class PhoneState(
     val gestureSens: Float = 1f,
     val gestureInvX: Boolean = false,
     val gestureInvY: Boolean = false,
+    /** Suivi actif sur le téléphone, avec son état en clair et un code (ok, id, cal, search, lost). */
+    val following: Boolean = false,
+    val followText: String = "",
+    val followKind: String = "",
+    val needMotion: Boolean = false,
+    val needGps: Boolean = false,
 )
+
+fun followTint(kind: String): Color = when (kind) {
+    "ok" -> Wk.Kinkeliba
+    else -> Wk.Amber
+}
 
 /** Écran rond : la lunette graduée tourne avec la nacelle, le cadran central est le joystick. */
 @Composable
@@ -105,13 +116,19 @@ fun WatchScreen(
         val radius = minOf(maxWidth, maxHeight) / 2
 
         Canvas(Modifier.fillMaxSize()) {
-            drawBezel(pan, state.pan != null && ready, ready, phoneOk && state.recording, gestureOn)
+            drawBezel(
+                pan, state.pan != null && ready, ready, phoneOk && state.recording, gestureOn,
+                follow = if (phoneOk && state.following) followTint(state.followKind) else null,
+            )
         }
 
+        val following = phoneOk && state.following
         val (label, color) = when {
             !phoneOk -> "Ouvre Topp sur le téléphone" to Wk.SandDim
+            following && state.followKind == "id" -> state.followText.ifBlank { "Fais coucou" } to Wk.Amber
             state.recording -> "● %02d:%02d".format(recSeconds / 60, recSeconds % 60) to Wk.Tally
             gestureOn -> "Gestes actifs" to Wk.Amber
+            following -> state.followText.ifBlank { "Suivi" } to followTint(state.followKind)
             state.recentering -> "Recentrage" to Wk.Amber
             !state.gimbal -> state.text.ifBlank { "Nacelle déconnectée" } to Wk.Amber
             else -> "Nacelle prête" to Wk.Sand
@@ -172,13 +189,12 @@ fun WatchScreen(
             modifier = at(135f),
             onClick = { onCommand("center") },
         ) { tint -> Canvas(Modifier.size(19.dp)) { glyphRecenter(tint) } }
-        RoundButton(
-            description = "Changer de caméra",
-            enabled = phoneOk,
-            size = 38.dp,
+        FollowButton(
+            on = following,
+            enabled = ready || following,
             modifier = at(90f),
-            onClick = { onCommand("flip") },
-        ) { tint -> Canvas(Modifier.size(19.dp)) { glyphFlip(tint) } }
+            onClick = { onCommand(if (following) "t0" else "t1") },
+        )
     }
 }
 
@@ -226,13 +242,43 @@ private fun GestureButton(
     }
 }
 
+/** Bouton Suivre : vert plein quand le suivi est actif. */
+@Composable
+private fun FollowButton(on: Boolean, enabled: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    val src = remember { MutableInteractionSource() }
+    val isPressed by src.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (isPressed) 0.88f else 1f, tween(90), label = "s")
+    val tint = when {
+        !enabled -> Wk.SandFaint
+        on -> Color.Black
+        else -> Wk.Sand
+    }
+    Box(
+        modifier.size(38.dp).scale(scale)
+            .semantics { contentDescription = if (on) "Couper le suivi" else "Suivre" }
+            .clip(CircleShape)
+            .background(if (on) Wk.Kinkeliba else Wk.Button)
+            .border(1.dp, if (on) Wk.Kinkeliba else Wk.SandFaint, CircleShape)
+            .clickable(enabled = enabled, interactionSource = src, indication = null) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(20.dp)) { glyphFollow(tint) }
+    }
+}
+
 /** Position sur un cercle, angle compté depuis midi dans le sens des aiguilles. */
 private fun onCircle(r: Dp, deg: Float): Pair<Dp, Dp> {
     val a = Math.toRadians(deg.toDouble())
     return r * sin(a).toFloat() to r * (-cos(a)).toFloat()
 }
 
-private fun DrawScope.drawBezel(pan: Float, showHome: Boolean, ready: Boolean, recording: Boolean, gestures: Boolean) {
+private fun DrawScope.drawBezel(
+    pan: Float, showHome: Boolean, ready: Boolean, recording: Boolean, gestures: Boolean, follow: Color? = null,
+) {
     val r = size.minDimension / 2f
     val c = Offset(size.width / 2f, size.height / 2f)
     val outer = r - 4.dp.toPx()
@@ -266,6 +312,8 @@ private fun DrawScope.drawBezel(pan: Float, showHome: Boolean, ready: Boolean, r
         drawCircle(Wk.Tally, r - 1.5.dp.toPx(), c, style = Stroke(3.dp.toPx()))
     } else if (gestures) {
         drawCircle(Wk.Amber, r - 1.5.dp.toPx(), c, style = Stroke(2.dp.toPx()))
+    } else if (follow != null) {
+        drawCircle(follow, r - 1.5.dp.toPx(), c, style = Stroke(2.dp.toPx()))
     }
 }
 
@@ -398,6 +446,25 @@ private fun WatchShutter(recording: Boolean, enabled: Boolean, modifier: Modifie
     }
 }
 
+/** Silhouette dans un cadre de visée. */
+private fun DrawScope.glyphFollow(c: Color) {
+    val u = size.minDimension / 24f
+    val w = 1.8f * u
+    fun corner(x: Float, y: Float, dx: Float, dy: Float) {
+        drawLine(c, Offset(x * u, y * u), Offset((x + dx * 4.5f) * u, y * u), w, StrokeCap.Round)
+        drawLine(c, Offset(x * u, y * u), Offset(x * u, (y + dy * 4.5f) * u), w, StrokeCap.Round)
+    }
+    corner(2.5f, 2.5f, 1f, 1f)
+    corner(21.5f, 2.5f, -1f, 1f)
+    corner(2.5f, 21.5f, 1f, -1f)
+    corner(21.5f, 21.5f, -1f, -1f)
+    drawCircle(c, 2.6f * u, Offset(12f * u, 9f * u), style = Stroke(w))
+    drawArc(
+        c, 180f, 180f, false, Offset(6.8f * u, 13.6f * u), androidx.compose.ui.geometry.Size(10.4f * u, 9f * u),
+        style = Stroke(w, cap = StrokeCap.Round),
+    )
+}
+
 /** Montre au centre, ondes de mouvement de chaque côté. */
 private fun DrawScope.glyphMotion(c: Color) {
     val u = size.minDimension / 24f
@@ -408,18 +475,6 @@ private fun DrawScope.glyphMotion(c: Color) {
     )
     drawArc(c, 135f, 90f, false, Offset(1.5f * u, 6f * u), androidx.compose.ui.geometry.Size(12f * u, 12f * u), style = Stroke(w, cap = StrokeCap.Round))
     drawArc(c, -45f, 90f, false, Offset(10.5f * u, 6f * u), androidx.compose.ui.geometry.Size(12f * u, 12f * u), style = Stroke(w, cap = StrokeCap.Round))
-}
-
-private fun DrawScope.glyphFlip(c: Color) {
-    val u = size.minDimension / 24f
-    val w = 1.8f * u
-    val s = Stroke(w, cap = StrokeCap.Round)
-    drawArc(c, 200f, 140f, false, Offset(4f * u, 4f * u), androidx.compose.ui.geometry.Size(16f * u, 16f * u), style = s)
-    drawArc(c, 20f, 140f, false, Offset(4f * u, 4f * u), androidx.compose.ui.geometry.Size(16f * u, 16f * u), style = s)
-    drawLine(c, Offset(19.5f * u, 9.2f * u), Offset(19.6f * u, 5.6f * u), w, StrokeCap.Round)
-    drawLine(c, Offset(19.5f * u, 9.2f * u), Offset(16.2f * u, 8.4f * u), w, StrokeCap.Round)
-    drawLine(c, Offset(4.5f * u, 14.8f * u), Offset(4.4f * u, 18.4f * u), w, StrokeCap.Round)
-    drawLine(c, Offset(4.5f * u, 14.8f * u), Offset(7.8f * u, 15.6f * u), w, StrokeCap.Round)
 }
 
 private fun DrawScope.glyphRecenter(c: Color) {

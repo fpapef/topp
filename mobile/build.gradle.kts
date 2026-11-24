@@ -20,8 +20,15 @@ android {
         applicationId = "com.fpapef.topp"
         minSdk = 31
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = 5
+        versionName = "1.4"
+        // MediaPipe embarque une bibliothèque native par architecture : les téléphones récents sont en arm64
+        ndk { abiFilters += "arm64-v8a" }
+    }
+
+    androidResources {
+        // Le modèle de détection est lu tel quel depuis l'APK
+        noCompress += "task"
     }
 
     signingConfigs {
@@ -37,7 +44,7 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("release")
         }
     }
@@ -84,6 +91,7 @@ dependencies {
     implementation("androidx.camera:camera-video:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
 
+    implementation("com.google.mediapipe:tasks-vision:0.10.35")
     implementation("com.google.android.gms:play-services-wearable:19.0.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")

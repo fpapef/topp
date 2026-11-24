@@ -13,11 +13,19 @@ Pilote la nacelle **Hohem iSteady V3** depuis ta **Galaxy Watch**, sans l'appli 
 - Change le mode de la nacelle, la recentre, passe d'une caméra à l'autre.
 - Le déclencheur de la nacelle lance et arrête l'enregistrement.
 
+**Le suivi** (bouton Suivre, sur le téléphone ou la montre)
+- La caméra repère les personnes dans l'image et la nacelle garde la tienne au centre, cadrée au niveau du buste.
+- S'il y a plusieurs personnes, la montre te reconnaît : fais coucou avec la main qui porte la montre, Topp compare tes mouvements de poignet à ceux de chaque personne à l'image. Tu peux aussi toucher quelqu'un à l'écran pour le suivre.
+- Si tu sors de l'image, le GPS de la montre prend le relais : la nacelle vise ta position jusqu'à ce que la caméra te retrouve.
+- Dans les réglages, trois modes : **Caméra + montre** (par défaut), **Caméra seule**, ou **GPS seul** pour l'extérieur à plus de 10 m.
+
+![Le suivi sur le téléphone et la montre](docs/suivi.png)
+
 **Sur la montre**
 - Un joystick tactile pour orienter la nacelle.
-- Les boutons Filmer, Mode, Recentrer et Changer de caméra.
+- Les boutons Filmer, Mode, Recentrer et Suivre.
 - **Les gestes du poignet** : touche le bouton Gestes et la nacelle suit ta main. Pointe la main à gauche ou à droite pour tourner, lève ou baisse les doigts pour incliner. Plus tu t'écartes du point de départ, plus elle va vite.
-- Un anneau rouge autour de l'écran pendant l'enregistrement, ambre quand les gestes sont actifs.
+- Un anneau rouge autour de l'écran pendant l'enregistrement, ambre quand les gestes sont actifs, vert pendant le suivi. La montre vibre quand elle a besoin que tu fasses coucou.
 
 Dans les réglages du téléphone, tu choisis comment s'activent les gestes (un appui pour marche/arrêt, ou seulement tant que tu maintiens le bouton), leur sensibilité et leur sens.
 
@@ -46,22 +54,28 @@ Si adb répond « more than one device », ajoute `-s IP:port` juste après `.\a
 
 Si un sens est inversé, coche « Inverser » dans les réglages (joystick et gestes ont leurs propres réglages). Le recentrage apprend le sens de rotation de la nacelle la première fois, avec une petite poussée d'essai.
 
+Le suivi fait pareil : au premier lancement (et la première fois avec chaque caméra et chaque orientation), la nacelle tourne un peu à droite puis vers le bas pendant une seconde et demie. Le gyroscope du téléphone mesure dans quel sens elle a bougé. Pour le GPS, autorise la position sur le téléphone et sur la montre ; il sert surtout dehors, quand tu es à plus de 8 à 10 m.
+
 ## Comment ça marche
 
 Hohem ne publie pas le protocole Bluetooth de ses nacelles. Il a été déduit des journaux de l'appli Hohem Joy, puis vérifié : Topp reproduit octet par octet les 1 312 commandes de suivi capturées.
 
 Quand Hohem Joy suit un sujet, elle envoie à la nacelle la position du cadre dans l'image, environ 30 fois par seconde, et c'est la nacelle qui fait tourner ses moteurs. Topp utilise la même commande avec un **cadre virtuel** : pousser le joystick vers la droite revient à dire « le sujet est à droite », et la nacelle tourne vers lui.
 
+Pour le suivi, Topp envoie la vraie position de ta silhouette, détectée par [MediaPipe Pose](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker) directement sur le téléphone, sans connexion. Pour savoir qui porte la montre, il compare sur 4 secondes l'agitation du poignet mesurée par le gyroscope de la montre à la vitesse des poignets de chaque personne à l'image. Quand la caméra te suit à plus de 8 m, Topp note l'écart entre le cap GPS téléphone → montre et la direction de la caméra ; c'est ce qui permet ensuite au GPS de viser juste.
+
 Détails des trames : [docs/PROTOCOLE.md](docs/PROTOCOLE.md).
 
 ```
-montre ──(Wear OS, ~14 messages/s)──▶ téléphone ──(Bluetooth LE, ~30 trames/s)──▶ nacelle
+montre ──(Wear OS : joystick, gestes, mouvements, GPS)──▶ téléphone ──(Bluetooth LE, ~30 trames/s)──▶ nacelle
+                                                          ▲
+                                          caméra + MediaPipe Pose
 ```
 
 ## Compatibilité
 
 - Conçu pour une Hohem iSteady V3 et une Galaxy Watch 7, avec un téléphone Samsung Galaxy.
-- Téléphone : Android 12 ou plus récent. Montre : Wear OS 3 ou plus récent.
+- Téléphone : Android 12 ou plus récent, processeur 64 bits (arm64). Montre : Wear OS 3 ou plus récent.
 - Les deux applis doivent venir de la même version (même signature) pour se parler.
 
 ## Compiler
@@ -80,6 +94,7 @@ Les écrans sont vérifiés par des captures générées sans appareil (Robolect
 
 ## Versions
 
+- **1.4** : suivi de la personne par la caméra, reconnaissance par la montre, GPS de la montre en renfort, trois modes au choix.
 - **1.3** : pilotage par les gestes du poignet (un appui ou maintenir), bouton Changer de caméra sur la montre.
 - **1.2** : nouvelle interface façon viseur, cadran d'attitude qui suit la nacelle, nouvelle montre.
 - **1.1** : recherche de la nacelle plus fiable, choix manuel dans la liste des appareils Bluetooth.
@@ -87,4 +102,4 @@ Les écrans sont vérifiés par des captures générées sans appareil (Robolect
 
 ---
 
-Projet personnel, sans lien avec Hohem ni Samsung.
+Projet personnel, sans lien avec Hohem ni Samsung. Le modèle de détection `pose_landmarker_lite.task` vient de Google MediaPipe (licence Apache 2.0).

@@ -35,6 +35,8 @@ class HudScreenshotTest {
         override fun settings() {}
         override fun chooseGimbal() {}
         override fun joystick(x: Float, y: Float) {}
+        override fun follow() {}
+        override fun pickPerson(x: Float, y: Float) {}
     }
 
     /** Fausse image de caméra : ciel, horizon, bâtiments, sol de latérite. */
@@ -98,7 +100,7 @@ class HudScreenshotTest {
     }
 
     @Test
-    @Config(qualifiers = "w412dp-h1400dp-port-xhdpi")
+    @Config(qualifiers = "w412dp-h2000dp-port-xhdpi")
     fun settingsSheet() {
         captureRoboImage("$out/4_reglages.png") {
             Themed {
@@ -113,6 +115,10 @@ class HudScreenshotTest {
                             override fun gestureSens(v: Float) {}
                             override fun gestureInvX(v: Boolean) {}
                             override fun gestureInvY(v: Boolean) {}
+                            override fun followMode(m: FollowMode) {}
+                            override fun followGain(v: Float) {}
+                            override fun followRelearn() {}
+                            override fun followRecalibrate() {}
                             override fun setHome() {}
                             override fun relearn() {}
                             override fun toggleConnection() {}
@@ -139,6 +145,66 @@ class HudScreenshotTest {
                         )
                     ) {}
                 }
+            }
+        }
+    }
+
+    private val ready = UiState(
+        gimbal = GimbalBle.Status.READY, modeLabel = "1", watchConnected = true, relPan = 8f, relTilt = -3f,
+    )
+
+    @Test
+    @Config(qualifiers = "w891dp-h412dp-land-xhdpi")
+    fun followCamera() {
+        captureRoboImage("$out/6_suivi_camera.png") {
+            Themed {
+                ToppHud(
+                    ready.copy(
+                        recording = true, recSeconds = 75,
+                        follow = FollowUi(
+                            on = true, status = FollowStatus.CAMERA, you = true,
+                            people = listOf(
+                                PersonUi(1, Box(0.42f, 0.2f, 0.57f, 0.95f), target = true),
+                                PersonUi(2, Box(0.72f, 0.33f, 0.8f, 0.78f), target = false),
+                            ),
+                        ),
+                    ),
+                    noop,
+                ) { FakeScene() }
+            }
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w412dp-h891dp-port-xhdpi")
+    fun followIdentify() {
+        captureRoboImage("$out/7_suivi_identifier.png") {
+            Themed {
+                ToppHud(
+                    ready.copy(
+                        follow = FollowUi(
+                            on = true, status = FollowStatus.IDENTIFY, aspect = 9f / 16f,
+                            people = listOf(
+                                PersonUi(1, Box(0.1f, 0.42f, 0.36f, 0.78f), target = false),
+                                PersonUi(2, Box(0.55f, 0.38f, 0.9f, 0.82f), target = false),
+                            ),
+                        ),
+                    ),
+                    noop,
+                ) { FakeScene() }
+            }
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w891dp-h412dp-land-xhdpi")
+    fun followGps() {
+        captureRoboImage("$out/8_suivi_gps.png") {
+            Themed {
+                ToppHud(
+                    ready.copy(follow = FollowUi(on = true, status = FollowStatus.GPS, distance = 23)),
+                    noop,
+                ) { FakeScene() }
             }
         }
     }

@@ -1,8 +1,14 @@
 package com.fpapef.topp.wear
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.view.WindowManager
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.ui.geometry.Offset
@@ -44,6 +50,23 @@ class MainActivity : ComponentActivity(), MessageClient.OnMessageReceivedListene
 
     private val commands = Channel<String>(Channel.UNLIMITED)
     private val joyOut = Channel<ByteArray>(Channel.CONFLATED)
+
+    // Suivi : la montre envoie ses mouvements et sa position tant que le téléphone le demande
+    private var wantMotion = false
+    private var wantGps = false
+    private var askedLocation = false
+    private var lastKind = ""
+    /** Secours si le service ne peut pas démarrer : l'écran envoie lui-même, tant qu'il est ouvert. */
+    private val localStream by lazy { Stream(applicationContext, lifecycleScope) }
+    private var usingLocal = false
+
+    private val locationLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        if (!hasLocation()) commands.trySend("gps-refus")
+        applyFollow()
+    }
+
+    private fun hasLocation() =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -126,6 +149,58 @@ class MainActivity : ComponentActivity(), MessageClient.OnMessageReceivedListene
         commands.trySend(if (on) "g1" else "g0")
     }
 
+    /** Lance ou arrête l'envoi des mouvements et du GPS selon ce que demande le téléphone. */
+    private fun syncFollow(st: PhoneState) {
+        val kind = if (st.following) st.followKind else ""
+        if (kind != lastKind) {
+            when {
+                kind == "id" -> buzz(longArrayOf(0, 60, 90, 60))
+                kind == "ok" && lastKind in setOf("id", "search", "lost", "cal") -> buzz(longArrayOf(0, 40))
+                kind == "lost" -> buzz(longArrayOf(0, 120))
+            }
+            lastKind = kind
+        }
+        val m = st.following && st.needMotion
+        val g = st.following && st.needGps
+        if (g && !hasLocation() && !askedLocation) {
+            askedLocation = true
+            locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        }
+        if (m != wantMotion || g != wantGps) {
+            wantMotion = m
+            wantGps = g
+            applyFollow()
+        }
+    }
+
+    private fun applyFollow() {
+        val g = wantGps && hasLocation()
+        if (usingLocal) localStream.update(wantMotion, g)
+        FollowService.update(this, wantMotion, g)
+        if (wantMotion || g) {
+            lifecycleScope.launch {
+                delay(1_500)
+                // Le service n'a pas pu démarrer : on envoie depuis l'écran, tant qu'il reste ouvert
+                if ((wantMotion || wantGps) && !FollowService.running) {
+                    usingLocal = true
+                    localStream.update(wantMotion, wantGps && hasLocation())
+                } else if (FollowService.running && usingLocal) {
+                    usingLocal = false
+                    localStream.stop()
+                }
+            }
+        } else if (usingLocal) {
+            usingLocal = false
+            localStream.stop()
+        }
+    }
+
+    private fun buzz(pattern: LongArray) {
+        runCatching {
+            getSystemService(Vibrator::class.java)?.vibrate(VibrationEffect.createWaveform(pattern, -1))
+        }
+    }
+
     private fun floats(x: Float, y: Float): ByteArray = ByteBuffer.allocate(8).putFloat(x).putFloat(y).array()
 
     override fun onResume() {
@@ -158,7 +233,13 @@ class MainActivity : ComponentActivity(), MessageClient.OnMessageReceivedListene
                 gestureSens = j.optDouble("gs", 1.0).toFloat(),
                 gestureInvX = j.optBoolean("gix"),
                 gestureInvY = j.optBoolean("giy"),
+                following = j.optBoolean("tr"),
+                followText = j.optString("ts"),
+                followKind = j.optString("tk"),
+                needMotion = j.optBoolean("wm"),
+                needGps = j.optBoolean("wg"),
             )
+            syncFollow(phone.value)
             if (j.has("rs")) {
                 recBase = j.optLong("rs")
                 recBaseAt = SystemClock.elapsedRealtime()

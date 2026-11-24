@@ -2,6 +2,7 @@ package com.fpapef.topp
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.clickable
@@ -15,6 +16,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -42,6 +45,8 @@ data class SettingsValues(
     val gestureSens: Float = 1f,
     val gestureInvX: Boolean = false,
     val gestureInvY: Boolean = false,
+    val followMode: FollowMode = FollowMode.CAMERA_WATCH,
+    val followGain: Float = 1f,
 )
 
 interface SettingsActions {
@@ -52,6 +57,10 @@ interface SettingsActions {
     fun gestureSens(v: Float)
     fun gestureInvX(v: Boolean)
     fun gestureInvY(v: Boolean)
+    fun followMode(m: FollowMode)
+    fun followGain(v: Float)
+    fun followRelearn()
+    fun followRecalibrate()
     fun setHome()
     fun relearn()
     fun toggleConnection()
@@ -128,6 +137,35 @@ private fun Choice(options: List<String>, selected: Int, onSelect: (Int) -> Unit
     }
 }
 
+/** Choix exclusif entre options détaillées, empilées. */
+@Composable
+private fun ChoiceList(options: List<Pair<String, String>>, selected: Int, onSelect: (Int) -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).border(1.dp, Tk.SandFaint, RoundedCornerShape(12.dp))
+    ) {
+        options.forEachIndexed { i, (title, desc) ->
+            val on = i == selected
+            if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0x1FEADFC8)))
+            Row(
+                Modifier.fillMaxWidth().background(if (on) Color(0x26F2A93B) else Color.Transparent)
+                    .clickable { onSelect(i) }.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = hud(16.sp, FontWeight.SemiBold, if (on) Tk.Amber else Tk.Sand, shadow = false))
+                    Spacer(Modifier.height(3.dp))
+                    Text(desc, style = hud(13.sp, FontWeight.Normal, Tk.SandDim, shadow = false))
+                }
+                Spacer(Modifier.width(12.dp))
+                Box(
+                    Modifier.size(20.dp).clip(CircleShape)
+                        .border(if (on) 6.dp else 1.5.dp, if (on) Tk.Amber else Tk.SandFaint, CircleShape)
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun SettingsContent(v: SettingsValues, a: SettingsActions) {
     Column(
@@ -135,6 +173,50 @@ fun SettingsContent(v: SettingsValues, a: SettingsActions) {
             .navigationBarsPadding()
     ) {
         SheetTitle("Réglages")
+        Section("Suivi") {
+            Text(
+                "Le bouton Suivre garde quelqu'un dans l'image. Choisis ce qui le guide :",
+                style = hud(14.sp, FontWeight.Normal, Tk.SandDim, shadow = false),
+            )
+            Spacer(Modifier.height(12.dp))
+            val modes = listOf(FollowMode.CAMERA_WATCH, FollowMode.CAMERA, FollowMode.GPS)
+            ChoiceList(
+                listOf(
+                    "Caméra + montre" to "La caméra te suit, la montre te reconnaît parmi plusieurs personnes, " +
+                        "et son GPS reprend la main quand tu sors de l'image.",
+                    "Caméra seule" to "Suit la personne vue à l'image, ou celle que tu touches. Sans la montre.",
+                    "GPS seul" to "En extérieur, à plus de 10 m : la nacelle vise la position de ta montre.",
+                ),
+                selected = modes.indexOf(v.followMode).coerceAtLeast(0),
+                onSelect = { a.followMode(modes[it]) },
+            )
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text("Réactivité", style = hud(16.sp, FontWeight.Normal, shadow = false), modifier = Modifier.weight(1f))
+                Text("×%.1f".format(v.followGain).replace('.', ','), style = hud(16.sp, FontWeight.SemiBold, Tk.Amber, shadow = false))
+            }
+            Slider(
+                value = v.followGain,
+                onValueChange = a::followGain,
+                valueRange = 0.5f..1.5f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Tk.Amber,
+                    activeTrackColor = Tk.Amber,
+                    inactiveTrackColor = Tk.SandFaint,
+                ),
+            )
+            Row {
+                Text("Douce", style = hud(12.sp, FontWeight.Normal, Tk.SandDim, shadow = false), modifier = Modifier.weight(1f))
+                Text("Vive", style = hud(12.sp, FontWeight.Normal, Tk.SandDim, shadow = false))
+            }
+            Spacer(Modifier.height(4.dp))
+            ActionRow("Recaler le GPS sur moi", onClick = a::followRecalibrate)
+            Text(
+                "Suivi activé, mets-toi au centre de l'image à plus de 10 m, puis touche ici.",
+                style = hud(13.sp, FontWeight.Normal, Tk.SandDim, shadow = false),
+            )
+            ActionRow("Réapprendre le sens du suivi", onClick = a::followRelearn)
+        }
         Section("Joystick") {
             Row(verticalAlignment = Alignment.Bottom) {
                 Text("Vitesse", style = hud(16.sp, FontWeight.Normal, shadow = false), modifier = Modifier.weight(1f))

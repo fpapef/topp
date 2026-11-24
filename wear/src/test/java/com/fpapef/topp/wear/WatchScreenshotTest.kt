@@ -34,4 +34,17 @@ class WatchScreenshotTest {
     @Test fun noPhone() = shot("montre_3_sans_telephone", PhoneState(), phoneOk = false)
     @Test fun gestures() = shot("montre_5_gestes", PhoneState(gimbal = true, mode = "1", pan = 12, tilt = 4), gesture = true, vec = Offset(0.55f, -0.3f))
     @Test fun searching() = shot("montre_4_recherche", PhoneState(gimbal = false, text = "Recherche de la nacelle"))
+    @Test fun followCamera() = shot(
+        "montre_6_suivi_camera",
+        PhoneState(gimbal = true, mode = "1", pan = 18, tilt = 2, following = true, followText = "Suivi : caméra", followKind = "ok"),
+    )
+    @Test fun followWave() = shot(
+        "montre_7_fais_coucou",
+        PhoneState(gimbal = true, mode = "1", pan = 0, tilt = 0, following = true, followText = "Fais coucou", followKind = "id"),
+    )
+    @Test fun followGps() = shot(
+        "montre_8_suivi_gps",
+        PhoneState(gimbal = true, mode = "1", pan = -64, tilt = 0, recording = true, following = true, followText = "Suivi : GPS 23 m", followKind = "ok"),
+        rec = 95,
+    )
 }

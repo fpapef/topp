@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -37,6 +38,8 @@ class ToppApp : Application() {
         private set
     lateinit var wear: WearBridge
         private set
+    lateinit var follow: Follow
+        private set
 
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
 
@@ -50,8 +53,16 @@ class ToppApp : Application() {
         val prefs = getSharedPreferences("topp", MODE_PRIVATE)
         ble = GimbalBle(this, scope, ::log)
         controller = Controller(ble, scope, prefs, ::log)
-        wear = WearBridge(this, scope, onJoystick = controller::joystick, onCommand = ::onWatchCommand)
+        follow = Follow(this, ble, controller, scope, prefs, ::log)
+        wear = WearBridge(
+            this, scope,
+            onJoystick = controller::joystick,
+            onCommand = ::onWatchCommand,
+            onMotion = follow::onWatchMotion,
+            onGps = follow::onWatchGps,
+        )
         controller.start()
+        follow.startLoop()
         wear.start()
 
         scope.launch {
@@ -63,7 +74,8 @@ class ToppApp : Application() {
             }
         }
         scope.launch {
-            combine(ble.state, recording, controller.moving) { s, r, m -> watchState(s, r, m) }
+            val followSummary = follow.ui.map { Triple(it.on, it.text(true), it.kind) }.distinctUntilChanged()
+            combine(ble.state, recording, controller.moving, followSummary) { s, r, m, _ -> watchState(s, r, m) }
                 .distinctUntilChanged()
                 .conflate()
                 .collect {
@@ -92,6 +104,9 @@ class ToppApp : Application() {
             "g0" -> { gesturesActive.value = false; log("Gestes de la montre coupés") }
             "mode" -> cycleMode()
             "center" -> controller.recenter()
+            "t1" -> follow.start()
+            "t0" -> follow.stop()
+            "gps-refus" -> log("Position de la montre refusée : autorise-la sur la montre pour le GPS")
             "hello" -> {
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastWatchHello > 10_000) log("Montre connectée ✓")
@@ -125,6 +140,14 @@ class ToppApp : Application() {
             j.put("ti", (a.encTilt - controller.homeTilt).roundToInt())
         }
         if (rec && recStartedAt.value > 0) j.put("rs", (SystemClock.elapsedRealtime() - recStartedAt.value) / 1000)
+        val f = follow.ui.value
+        j.put("tr", f.on)
+        if (f.on) {
+            j.put("ts", f.text(true))
+            j.put("tk", f.kind)
+            j.put("wm", f.needsMotion)
+            j.put("wg", f.needsGps)
+        }
         return j.toString()
     }
 }

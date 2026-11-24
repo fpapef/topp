@@ -43,10 +43,10 @@ jobs:
           fi
           printf "storePassword=%s\nkeyPassword=%s\nkeyAlias=topp\nstoreFile=../topp.jks\n" "$PASS" "$PASS" > keystore.properties
 
-      - name: Tests du protocole et des gestes
+      - name: Tests du protocole, du suivi et des gestes
         run: >
           ./gradlew --no-daemon
-          :mobile:testDebugUnitTest --tests 'com.fpapef.topp.HohemTest'
+          :mobile:testDebugUnitTest --tests 'com.fpapef.topp.HohemTest' --tests 'com.fpapef.topp.TrackTest'
           :wear:testDebugUnitTest --tests 'com.fpapef.topp.wear.GestureTest'
 
       - name: Compilation des APK

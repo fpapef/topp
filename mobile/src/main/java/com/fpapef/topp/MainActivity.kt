@@ -8,6 +8,9 @@ import android.content.res.Configuration
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.MediaStore
+import android.util.Size
+import android.view.OrientationEventListener
+import android.view.Surface
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -15,7 +18,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.MediaStoreOutputOptions
@@ -51,11 +58,17 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
     private val app get() = application as ToppApp
     private var previewView: PreviewView? = null
     private var videoCapture: VideoCapture<Recorder>? = null
+    private var analysis: ImageAnalysis? = null
+    private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val vision by lazy { Vision(applicationContext, app.follow, app::log) }
+    private var orientationListener: OrientationEventListener? = null
     private var recording: Recording? = null
     private var lensFacing = CameraSelector.LENS_FACING_BACK
     private var lastRecToggle = 0L
@@ -69,6 +82,11 @@ class MainActivity : ComponentActivity() {
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         onPermissions()
+    }
+
+    private val locationLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) app.follow.onLocationPermission()
+        else app.log("Position refusée : le GPS du suivi ne marchera pas")
     }
 
     private fun granted(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
@@ -93,6 +111,29 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        lifecycleScope.launch {
+            app.follow.needLocationPermission.collect {
+                if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
+                    locationLauncher.launch(
+                        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+                    )
+                }
+            }
+        }
+        // Orientation réelle du téléphone, même si la rotation automatique de l'écran est coupée
+        orientationListener = object : OrientationEventListener(this) {
+            override fun onOrientationChanged(o: Int) {
+                if (o == ORIENTATION_UNKNOWN) return
+                val r = when (o) {
+                    in 45 until 135 -> 270
+                    in 135 until 225 -> 180
+                    in 225 until 315 -> 90
+                    else -> 0
+                }
+                app.follow.physicalRotation = r
+            }
+        }
+        updateDisplayRotation()
         val missing = permissions.filterNot(::granted)
         if (missing.isEmpty()) onPermissions() else permLauncher.launch(missing.toTypedArray())
     }
@@ -112,18 +153,44 @@ class MainActivity : ComponentActivity() {
         future.addListener({
             runCatching {
                 val provider = future.get()
-                val preview = Preview.Builder().build().also { it.setSurfaceProvider(pv.surfaceProvider) }
+                val wide = ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                    .build()
+                val preview = Preview.Builder().setResolutionSelector(wide).build()
+                    .also { it.setSurfaceProvider(pv.surfaceProvider) }
+                val an = ImageAnalysis.Builder()
+                    .setResolutionSelector(
+                        ResolutionSelector.Builder()
+                            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                            .setResolutionStrategy(
+                                ResolutionStrategy(Size(960, 540), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
+                            )
+                            .build()
+                    )
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                    .build()
+                    .also { it.setAnalyzer(analysisExecutor, vision) }
                 val recorder = Recorder.Builder()
                     .setQualitySelector(
                         QualitySelector.from(Quality.FHD, FallbackStrategy.lowerQualityOrHigherThan(Quality.HD))
                     )
                     .build()
                 val vc = VideoCapture.withOutput(recorder)
-                display?.let { vc.targetRotation = it.rotation }
+                display?.let { vc.targetRotation = it.rotation; an.targetRotation = it.rotation }
                 provider.unbindAll()
-                provider.bindToLifecycle(
-                    this, CameraSelector.Builder().requireLensFacing(lensFacing).build(), preview, vc
-                )
+                val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
+                runCatching { provider.bindToLifecycle(this, selector, preview, vc, an) }
+                    .onSuccess { analysis = an }
+                    .onFailure {
+                        // Combinaison refusée par la caméra : on garde l'aperçu et la vidéo, sans suivi caméra
+                        app.log("Caméra : suivi par l'image indisponible (${it.message})")
+                        provider.unbindAll()
+                        provider.bindToLifecycle(this, selector, preview, vc)
+                        analysis = null
+                    }
+                vision.front = lensFacing == CameraSelector.LENS_FACING_FRONT
+                app.follow.setLens(vision.front)
                 videoCapture = vc
             }.onFailure { app.log("Caméra : ${it.message}") }
         }, ContextCompat.getMainExecutor(this))
@@ -178,7 +245,36 @@ class MainActivity : ComponentActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        display?.let { d -> videoCapture?.targetRotation = d.rotation }
+        display?.let { d ->
+            videoCapture?.targetRotation = d.rotation
+            analysis?.targetRotation = d.rotation
+        }
+        updateDisplayRotation()
+    }
+
+    private fun updateDisplayRotation() {
+        app.follow.displayRotation = when (display?.rotation) {
+            Surface.ROTATION_90 -> 90
+            Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        orientationListener?.takeIf { it.canDetectOrientation() }?.enable()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        orientationListener?.disable()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        analysisExecutor.execute { vision.close() }
+        analysisExecutor.shutdown()
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
@@ -201,6 +297,7 @@ private fun ToppScreen(
     val devices by app.ble.seen.collectAsStateWithLifecycle()
     val watchAt by app.wear.lastWatchMessage.collectAsStateWithLifecycle()
     val gestures by app.gesturesActive.collectAsStateWithLifecycle()
+    val follow by app.follow.ui.collectAsStateWithLifecycle()
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     var sheet by remember { mutableStateOf(Sheet.NONE) }
     LaunchedEffect(Unit) {
@@ -218,6 +315,7 @@ private fun ToppScreen(
         relTilt = att?.let { it.encTilt - c.homeTilt },
         recentering = c.recentering,
         gesturesActive = gestures,
+        follow = follow,
     )
     val actions = remember {
         object : UiActions {
@@ -228,6 +326,8 @@ private fun ToppScreen(
             override fun settings() { sheet = Sheet.SETTINGS }
             override fun chooseGimbal() { app.ble.connect(); sheet = Sheet.PICKER }
             override fun joystick(x: Float, y: Float) = c.joystick(x, y)
+            override fun follow() { app.follow.toggle() }
+            override fun pickPerson(x: Float, y: Float) = app.follow.pick(x, y)
         }
     }
 
@@ -252,10 +352,13 @@ private fun ToppScreen(
                         var gSens by remember { mutableFloatStateOf(c.gestureSens) }
                         var gInvX by remember { mutableStateOf(c.gestureInvX) }
                         var gInvY by remember { mutableStateOf(c.gestureInvY) }
+                        var fMode by remember { mutableStateOf(app.follow.mode) }
+                        var fGain by remember { mutableFloatStateOf(app.follow.gain) }
                         SettingsContent(
                             SettingsValues(
                                 speed, invX, invY, s.status != GimbalBle.Status.OFF,
                                 gestureHold = gHold, gestureSens = gSens, gestureInvX = gInvX, gestureInvY = gInvY,
+                                followMode = fMode, followGain = fGain,
                             ),
                             object : SettingsActions {
                                 override fun speed(v: Float) { speed = v; c.speed = v }
@@ -265,6 +368,10 @@ private fun ToppScreen(
                                 override fun gestureSens(v: Float) { gSens = v; c.gestureSens = v }
                                 override fun gestureInvX(v: Boolean) { gInvX = v; c.gestureInvX = v }
                                 override fun gestureInvY(v: Boolean) { gInvY = v; c.gestureInvY = v }
+                                override fun followMode(m: FollowMode) { fMode = m; app.follow.mode = m }
+                                override fun followGain(v: Float) { fGain = v; app.follow.gain = v }
+                                override fun followRelearn() = app.follow.relearn()
+                                override fun followRecalibrate() = app.follow.recalibrate()
                                 override fun setHome() { c.setHomeHere() }
                                 override fun relearn() = c.resetLearning()
                                 override fun toggleConnection() {

@@ -13,6 +13,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -51,6 +53,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -122,6 +125,7 @@ data class UiState(
     val relTilt: Float? = null,
     val recentering: Boolean = false,
     val gesturesActive: Boolean = false,
+    val follow: FollowUi = FollowUi(),
 )
 
 interface UiActions {
@@ -132,6 +136,9 @@ interface UiActions {
     fun settings()
     fun chooseGimbal()
     fun joystick(x: Float, y: Float)
+    fun follow()
+    /** Toucher une personne : (x, y) dans l'image analysée, non retournée. */
+    fun pickPerson(x: Float, y: Float)
 }
 
 fun statusLabel(s: GimbalBle.Status, recentering: Boolean) = when {
@@ -160,6 +167,10 @@ fun ToppHud(state: UiState, actions: UiActions, preview: @Composable () -> Unit)
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
         val portrait = maxHeight > maxWidth
         preview()
+
+        if (state.follow.on && state.follow.mode != FollowMode.GPS) {
+            PeopleOverlay(state.follow, actions::pickPerson, Modifier.fillMaxSize())
+        }
 
         // Voiles en haut et en bas pour lire le texte sur n'importe quelle image
         Box(
@@ -217,6 +228,13 @@ fun ToppHud(state: UiState, actions: UiActions, preview: @Composable () -> Unit)
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            GlyphButton(
+                onClick = actions::follow,
+                description = if (state.follow.on) "Couper le suivi" else "Suivre",
+                enabled = state.gimbal == GimbalBle.Status.READY || state.follow.on,
+                active = state.follow.on,
+                activeColor = Tk.Kinkeliba,
+            ) { glyphFollow(it) }
             GlyphButton(
                 onClick = actions::recenter,
                 description = "Recentrer la nacelle",
@@ -289,6 +307,19 @@ private fun StatusBlock(state: UiState, actions: UiActions, modifier: Modifier) 
                     },
                 ),
             )
+        }
+        if (state.follow.on) {
+            Spacer(Modifier.height(4.dp))
+            val fc = followColor(state.follow)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Canvas(Modifier.size(14.dp)) { glyphFollow(fc) }
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    state.follow.text(short = false),
+                    style = hud(13.sp, FontWeight.Medium, fc),
+                    modifier = Modifier.widthIn(max = 280.dp),
+                )
+            }
         }
         if (!ready && !searching) {
             Spacer(Modifier.height(8.dp))
@@ -512,6 +543,7 @@ fun RailButton(
     size: Dp = 52.dp,
     enabled: Boolean = true,
     active: Boolean = false,
+    activeColor: Color = Tk.Amber,
     content: @Composable (Color) -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
@@ -520,7 +552,7 @@ fun RailButton(
     val scale by animateFloatAsState(if (isPressed) 0.9f else 1f, tween(90), label = "s")
     val tint = when {
         !enabled -> Tk.SandFaint
-        active -> Tk.Amber
+        active -> activeColor
         else -> Tk.Sand
     }
     Box(
@@ -528,7 +560,7 @@ fun RailButton(
             .semantics { contentDescription = description }
             .clip(CircleShape)
             .background(Tk.Scrim)
-            .border(1.dp, if (active) Tk.Amber else Tk.SandFaint, CircleShape)
+            .border(if (active) 1.5.dp else 1.dp, if (active) activeColor else Tk.SandFaint, CircleShape)
             .clickable(enabled = enabled, interactionSource = src, indication = null) {
                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 onClick()
@@ -549,8 +581,9 @@ fun GlyphButton(
     size: Dp = 52.dp,
     enabled: Boolean = true,
     active: Boolean = false,
+    activeColor: Color = Tk.Amber,
     glyph: DrawScope.(Color) -> Unit,
-) = RailButton(onClick, description, modifier, size, enabled, active) { tint ->
+) = RailButton(onClick, description, modifier, size, enabled, active, activeColor) { tint ->
     Canvas(Modifier.fillMaxSize()) { glyph(tint) }
 }
 
@@ -599,6 +632,76 @@ fun DrawScope.glyphWatch(c: Color) {
     drawLine(c, pt(15f, 6.5f), pt(14.5f, 2f), w, StrokeCap.Round)
     drawLine(c, pt(9f, 17.5f), pt(9.5f, 22f), w, StrokeCap.Round)
     drawLine(c, pt(15f, 17.5f), pt(14.5f, 22f), w, StrokeCap.Round)
+}
+
+/** Une silhouette dans un cadre de visée. */
+fun DrawScope.glyphFollow(c: Color) {
+    val w = u(1.7f)
+    fun corner(x: Float, y: Float, dx: Float, dy: Float) {
+        drawLine(c, pt(x, y), pt(x + dx * 4.5f, y), w, StrokeCap.Round)
+        drawLine(c, pt(x, y), pt(x, y + dy * 4.5f), w, StrokeCap.Round)
+    }
+    corner(2.5f, 2.5f, 1f, 1f)
+    corner(21.5f, 2.5f, -1f, 1f)
+    corner(2.5f, 21.5f, 1f, -1f)
+    corner(21.5f, 21.5f, -1f, -1f)
+    drawCircle(c, u(2.6f), pt(12f, 9f), style = stroke())
+    drawArc(c, 180f, 180f, false, pt(6.8f, 13.6f), Size(u(10.4f), u(9f)), style = stroke())
+}
+
+fun followColor(f: FollowUi): Color = when (f.kind) {
+    "ok" -> Tk.Kinkeliba
+    "lost" -> if (f.status == FollowStatus.NO_GIMBAL) Tk.SandDim else Tk.Amber
+    else -> Tk.Amber
+}
+
+/**
+ * Cadres des personnes vues par la caméra. La cible est en vert ; toucher une autre personne
+ * la choisit. L'aperçu remplit l'écran (recadrage centré), on applique la même mise à l'échelle.
+ */
+@Composable
+fun PeopleOverlay(f: FollowUi, onPick: (Float, Float) -> Unit, modifier: Modifier) {
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val label = hud(13.sp, FontWeight.SemiBold, Tk.Kinkeliba)
+    Canvas(
+        modifier.pointerInput(f.mirror, f.aspect) {
+            detectTapGestures { p ->
+                val w = size.width.toFloat()
+                val h = size.height.toFloat()
+                val s = maxOf(w / f.aspect, h)
+                val x = if (f.mirror) w - p.x else p.x
+                onPick((x - w / 2f) / (f.aspect * s) + 0.5f, (p.y - h / 2f) / s + 0.5f)
+            }
+        }
+    ) {
+        val w = size.width
+        val h = size.height
+        val s = maxOf(w / f.aspect, h)
+        fun px(u: Float): Float { val x = w / 2f + (u - 0.5f) * f.aspect * s; return if (f.mirror) w - x else x }
+        fun py(v: Float) = h / 2f + (v - 0.5f) * s
+        for (p in f.people) {
+            val x1 = minOf(px(p.box.l), px(p.box.r))
+            val x2 = maxOf(px(p.box.l), px(p.box.r))
+            val y1 = py(p.box.t)
+            val y2 = py(p.box.b)
+            val arm = (minOf(x2 - x1, y2 - y1) * 0.22f).coerceIn(10.dp.toPx(), 28.dp.toPx())
+            val c = if (p.target) Tk.Kinkeliba else Tk.Sand.copy(alpha = 0.6f)
+            val sw = (if (p.target) 2.5.dp else 1.5.dp).toPx()
+            fun corner(x: Float, y: Float, dx: Float, dy: Float) {
+                drawLine(Color(0x66000000), Offset(x, y + 1f), Offset(x + dx * arm, y + 1f), sw + 2f, StrokeCap.Round)
+                drawLine(c, Offset(x, y), Offset(x + dx * arm, y), sw, StrokeCap.Round)
+                drawLine(c, Offset(x, y), Offset(x, y + dy * arm), sw, StrokeCap.Round)
+            }
+            corner(x1, y1, 1f, 1f)
+            corner(x2, y1, -1f, 1f)
+            corner(x1, y2, 1f, -1f)
+            corner(x2, y2, -1f, -1f)
+            if (p.target && f.you) {
+                val tl = measurer.measure("Toi", label)
+                drawText(tl, topLeft = Offset(x1, (y1 - tl.size.height - 4.dp.toPx()).coerceAtLeast(0f)))
+            }
+        }
+    }
 }
 
 /** Petit utilitaire pour les tests : vecteur pouce depuis un angle (en degrés) et une longueur. */

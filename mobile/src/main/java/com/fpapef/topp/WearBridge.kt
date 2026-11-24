@@ -18,6 +18,10 @@ class WearBridge(
     private val scope: CoroutineScope,
     private val onJoystick: (Float, Float) -> Unit,
     private val onCommand: (String) -> Unit,
+    /** (réception, heure montre du dernier échantillon, agitation du poignet en rad/s toutes les 100 ms) */
+    private val onMotion: (Long, Long, FloatArray) -> Unit = { _, _, _ -> },
+    /** (réception, lat, lon, précision m, vitesse m/s ou −1, cap ° ou −1, âge de la position en ms) */
+    private val onGps: (Long, Double, Double, Float, Float, Float, Long) -> Unit = { _, _, _, _, _, _, _ -> },
 ) : MessageClient.OnMessageReceivedListener {
 
     private val messages = Wearable.getMessageClient(ctx)
@@ -31,13 +35,26 @@ class WearBridge(
     }
 
     override fun onMessageReceived(e: MessageEvent) {
-        lastWatchMessage.value = SystemClock.elapsedRealtime()
-        when (e.path) {
-            PATH_JOY -> if (e.data.size >= 8) {
-                val b = ByteBuffer.wrap(e.data)
-                onJoystick(b.float, b.float)
+        val now = SystemClock.elapsedRealtime()
+        lastWatchMessage.value = now
+        runCatching {
+            when (e.path) {
+                PATH_JOY -> if (e.data.size >= 8) {
+                    val b = ByteBuffer.wrap(e.data)
+                    onJoystick(b.float, b.float)
+                }
+                PATH_CMD -> onCommand(String(e.data, Charsets.UTF_8))
+                PATH_MOTION -> if (e.data.size >= 12) {
+                    val b = ByteBuffer.wrap(e.data)
+                    val tLast = b.long
+                    val n = b.int.coerceIn(0, (e.data.size - 12) / 4)
+                    onMotion(now, tLast, FloatArray(n) { b.float })
+                }
+                PATH_GPS -> if (e.data.size >= 36) {
+                    val b = ByteBuffer.wrap(e.data)
+                    onGps(now, b.double, b.double, b.float, b.float, b.float, b.long)
+                }
             }
-            PATH_CMD -> onCommand(String(e.data, Charsets.UTF_8))
         }
     }
 
@@ -55,5 +72,7 @@ class WearBridge(
         const val PATH_JOY = "/topp/joy"
         const val PATH_CMD = "/topp/cmd"
         const val PATH_STATE = "/topp/state"
+        const val PATH_MOTION = "/topp/mot"
+        const val PATH_GPS = "/topp/gps"
     }
 }
