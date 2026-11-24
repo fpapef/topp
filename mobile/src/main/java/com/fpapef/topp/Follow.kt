@@ -35,6 +35,8 @@ data class FollowUi(
     /** La cible est reconnue comme le porteur de la montre. */
     val you: Boolean = false,
     val distance: Int? = null,
+    /** Pourquoi on ne voit personne : "error" (détection en panne), "noframes" (pas d'image), null. */
+    val vision: String? = null,
 ) {
     val needsMotion: Boolean get() = on && mode == FollowMode.CAMERA_WATCH
     val needsGps: Boolean get() = on && mode != FollowMode.CAMERA
@@ -53,7 +55,13 @@ data class FollowUi(
         val d = distance
         return when (status) {
             FollowStatus.OFF -> "Suivi coupé"
-            FollowStatus.LOOKING -> if (mode == FollowMode.GPS) "GPS en attente" else "Je cherche quelqu'un"
+            FollowStatus.LOOKING -> when {
+                mode == FollowMode.GPS -> "GPS en attente"
+                vision == "error" -> if (short) "Détection en panne" else "Détection des personnes en panne : envoie le journal"
+                vision == "noframes" -> if (short) "Pas d'image" else "Le suivi ne reçoit pas d'image de la caméra"
+                short -> "Je cherche quelqu'un"
+                else -> "Je cherche quelqu'un : mets-toi dans l'image"
+            }
             FollowStatus.IDENTIFY ->
                 if (short) "Fais coucou" else "Plusieurs personnes : fais coucou avec la main de la montre, ou touche-toi à l'écran"
             FollowStatus.LEARNING -> if (short) "Calibrage" else "Calibrage du suivi : la nacelle bouge un peu"
@@ -144,6 +152,11 @@ class Follow(
     private var status = FollowStatus.OFF
     private var distance: Int? = null
     private var lastFrameAt = 0L
+    private var framesSinceStart = 0
+    private var peopleSinceStart = 0
+    private var reported = false
+    /** Erreur de la détection (modèle, bibliothèque, image), affichée et notée au journal. */
+    @Volatile var visionError: String? = null
 
     private val watchMotion = Series(10_000)
     private val clockOffsets = ArrayDeque<Long>()
@@ -187,6 +200,9 @@ class Follow(
             status = FollowStatus.LOOKING
             probe = null
             probeFails = 0
+            framesSinceStart = 0
+            peopleSinceStart = 0
+            reported = false
             calib.reset()
             lastCalibFix = 0L
             distance = null
@@ -304,6 +320,8 @@ class Follow(
         synchronized(lock) {
             aspect = imageAspect
             lastFrameAt = t
+            framesSinceStart++
+            peopleSinceStart = max(peopleSinceStart, dets.size)
             people.update(t, dets)
             if (t - lastIdEval >= 500) { lastIdEval = t; evalIdentity(t) }
             choose(t)
@@ -433,10 +451,26 @@ class Follow(
                 }
             }
             if (t - lastPub > 250) { lastPub = t; publish() }
+            report(t)
         }
     }
 
-    private fun step(t: Long, manualNow: Boolean): ByteArray? {
+    /** Une ligne de bilan au journal, 4 s après le début du suivi : utile pour comprendre une panne. */
+    private fun report(t: Long) {
+        if (reported || mode == FollowMode.GPS || t - startedAt < 4_000) return
+        reported = true
+        val (n, p) = synchronized(lock) { framesSinceStart to peopleSinceStart }
+        val err = visionError
+        log(
+            when {
+                err != null -> "Détection en panne : $err"
+                n == 0 -> "Suivi : aucune image reçue de la caméra en 4 s"
+                else -> "Suivi : ${(n / 4f).roundToInt()} images/s analysées, jusqu'à $p personne(s) vue(s)"
+            }
+        )
+    }
+
+    internal fun step(t: Long, manualNow: Boolean): ByteArray? {
         if (!ble.isReady) { status = FollowStatus.NO_GIMBAL; probe = null; return null }
         val m = mapping() ?: run {
             status = FollowStatus.LEARNING
@@ -597,6 +631,12 @@ class Follow(
                 aspect = aspect,
                 you = you,
                 distance = distance,
+                vision = when {
+                    !on || modeCache == FollowMode.GPS -> null
+                    visionError != null -> "error"
+                    t - startedAt > 2_500 && t - lastFrameAt > 2_000 -> "noframes"
+                    else -> null
+                },
             )
         }
     }

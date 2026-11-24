@@ -20,8 +20,8 @@ android {
         applicationId = "com.fpapef.topp"
         minSdk = 31
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 6
+        versionName = "1.4.1"
         // MediaPipe embarque une bibliothèque native par architecture : les téléphones récents sont en arm64
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -42,8 +42,9 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // MediaPipe charge des classes par réflexion et par JNI : pas de réduction du code,
+            // pour être sûr que la détection fonctionne pareil qu'en développement.
+            isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("release")
         }

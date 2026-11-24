@@ -120,6 +120,17 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        // Secours du suivi : si la caméra ne fournit pas le flux d'analyse, on analyse une copie de l'aperçu
+        lifecycleScope.launch {
+            while (true) {
+                delay(100)
+                val f = app.follow
+                if (!f.on || f.mode == FollowMode.GPS || vision.busy) continue
+                if (SystemClock.elapsedRealtime() - vision.analysisAt < 1_500) continue
+                val shot = previewView?.bitmap ?: continue
+                analysisExecutor.execute { vision.processPreview(shot) }
+            }
+        }
         // Orientation réelle du téléphone, même si la rotation automatique de l'écran est coupée
         orientationListener = object : OrientationEventListener(this) {
             override fun onOrientationChanged(o: Int) {
