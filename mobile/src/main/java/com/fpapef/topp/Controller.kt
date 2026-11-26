@@ -97,8 +97,14 @@ class Controller(
     private fun curve(v: Float) = 0.3f * v + 0.7f * v * abs(v)
 
     /** Décalage envoyé à la nacelle pour une position du joystick (ou des gestes). */
+    /**
+     * Sens horizontal : l'aperçu de la caméra frontale est un miroir. Pour que « vers la droite »
+     * fasse glisser l'image comme avec les caméras arrière, on inverse la gauche et la droite.
+     */
+    internal fun horizontalSign(): Int = if (frontCamera && autoCorrectFront) -1 else 1
+
     internal fun offsetFor(x: Float, y: Float): Pair<Float, Float> {
-        val sx = if (invertX) -1f else 1f
+        val sx = (if (invertX) -1f else 1f) * horizontalSign()
         val sy = (if (invertY) -1f else 1f) * verticalSign()
         return sx * curve(x) * speed to sy * curve(y) * speed
     }

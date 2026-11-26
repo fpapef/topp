@@ -49,6 +49,10 @@ data class SettingsValues(
     val followGain: Float = 1f,
     val followAutoZoom: Boolean = true,
     val autoCorrectFront: Boolean = true,
+    val videoUhd: Boolean = true,
+    val video60: Boolean = false,
+    /** Format réellement obtenu, ex. « 3840 × 2160, 30 images/s ». */
+    val videoInfo: String = "",
 )
 
 interface SettingsActions {
@@ -65,6 +69,8 @@ interface SettingsActions {
     fun followRecalibrate()
     fun followAutoZoom(v: Boolean)
     fun autoCorrectFront(v: Boolean)
+    fun videoUhd(v: Boolean)
+    fun video60(v: Boolean)
     fun setHome()
     fun relearn()
     fun toggleConnection()
@@ -184,6 +190,18 @@ fun SettingsContent(v: SettingsValues, a: SettingsActions) {
             .navigationBarsPadding()
     ) {
         SheetTitle("Réglages")
+        Section("Vidéo") {
+            Choice(listOf("4K", "1080p"), if (v.videoUhd) 0 else 1) { a.videoUhd(it == 0) }
+            Spacer(Modifier.height(10.dp))
+            Choice(listOf("30 images/s", "60 images/s"), if (v.video60) 1 else 0) { a.video60(it == 1) }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                (if (v.videoInfo.isNotBlank()) "En ce moment : ${v.videoInfo}. " else "") +
+                    "Débit élevé pour une image nette. Le 60 images/s rend les mouvements plus fluides, " +
+                    "le 4K donne plus de détails.",
+                style = hud(13.sp, FontWeight.Normal, Tk.SandDim, shadow = false),
+            )
+        }
         Section("Suivi") {
             Text(
                 "Le bouton Suivre garde quelqu'un dans l'image. Choisis ce qui le guide :",
@@ -295,8 +313,8 @@ fun SettingsContent(v: SettingsValues, a: SettingsActions) {
         Section("Caméra frontale") {
             ToggleRow(
                 "Correction automatique", v.autoCorrectFront, a::autoCorrectFront,
-                detail = "Avec la caméra frontale, le joystick et les gestes vont dans le même sens qu'avec les caméras " +
-                    "arrière. Le gyroscope du téléphone vérifie le sens pendant que tu pilotes et le corrige tout seul.",
+                detail = "Avec la caméra frontale (image en miroir), la gauche et la droite sont inversées, et le haut " +
+                    "et le bas suivent le sens des caméras arrière : le gyroscope du téléphone le vérifie pendant que tu pilotes.",
             )
         }
         Section("Recentrage") {

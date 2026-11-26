@@ -254,42 +254,59 @@ class TrackTest {
         assertEquals("100x", lensLabel(100f))
     }
 
+    /** Alimente le zoom auto toutes les 100 ms pendant [ms] ; renvoie le premier zoom demandé. */
+    private fun feed(z: AutoZoom, t0: Long, ms: Long, zoom: Float, h: Float, wx: Float = 0f, wy: Float = 0f, speed: Float = 0f,
+                     stops: List<Float> = listOf(1f, 3f, 5f)): Pair<Long, Float>? {
+        var t = t0
+        while (t <= t0 + ms) {
+            z.update(t, stops, zoom, h, wx, wy, speed)?.let { return t to it }
+            t += 100
+        }
+        return null
+    }
+
     @Test
     fun zoomAutoPasseAuTeleQuandTuEsLoin() {
         val z = AutoZoom()
-        val stops = listOf(1f, 3f, 5f)
-        var t = 10_000L
-        // Petit, centré, immobile : on attend 1,5 s avant de zoomer
-        assertNull(z.update(t, stops, 1f, 0.15f, 0.02f, 0.01f, 0.02f))
-        t += 1_000
-        assertNull(z.update(t, stops, 1f, 0.15f, 0.02f, 0.01f, 0.02f))
-        t += 600
-        assertEquals(3f, z.update(t, stops, 1f, 0.15f, 0.02f, 0.01f, 0.02f))
-        z.lastChange = t
-        // À 3x, il fait 0,45 de haut : trop grand pour passer en 5x (0,75 > 0,65)
-        t += 5_000
-        repeat(5) { t += 500; assertNull(z.update(t, stops, 3f, 0.45f, 0f, 0f, 0f)) }
+        // Petit, centré, calme : le 3x arrive au bout de 2 s et quelque
+        val (t, zz) = feed(z, 10_000, 4_000, 1f, 0.15f)!!
+        assertEquals(3f, zz)
+        assertTrue("trop tôt : ${t - 10_000} ms", t - 10_000 >= 2_000)
+        z.onChanged(t, zoomedIn = true)
+        // À 3x il fait 0,45 de haut : en 5x il ferait 0,75, trop grand → on reste
+        assertNull(feed(z, t + 100, 10_000, 3f, 0.45f))
     }
 
     @Test
     fun zoomAutoNeZoomePasSurUnSujetQuiBouge() {
         val z = AutoZoom()
+        assertNull(feed(z, 0, 5_000, 1f, 0.15f, wx = 0.25f, stops = listOf(1f, 3f))) // pas centré
+        assertNull(feed(z, 6_000, 5_000, 1f, 0.15f, speed = 0.5f, stops = listOf(1f, 3f))) // rapide
+    }
+
+    @Test
+    fun zoomAutoNeFaitPasDeVaEtVient() {
+        val z = AutoZoom()
+        // Les bras levés une seconde (taille qui saute) ne font pas dézoomer
         var t = 0L
-        repeat(10) { t += 400; assertNull(z.update(t, listOf(1f, 3f), 1f, 0.15f, 0.25f, 0f, 0f)) } // pas centré
-        repeat(10) { t += 400; assertNull(z.update(t, listOf(1f, 3f), 1f, 0.15f, 0f, 0f, 0.5f)) } // rapide
+        repeat(30) { t += 100; assertNull(z.update(t, listOf(1f, 3f), 3f, if (it in 10..19) 0.95f else 0.5f, 0f, 0f, 0f)) }
+        // Juste après un zoom avant, un passage au bord fait reculer, puis on attend plus longtemps
+        val z2 = AutoZoom()
+        z2.onChanged(100_000, zoomedIn = true)
+        val back = feed(z2, 100_100, 2_000, 3f, 0.4f, wx = 0.42f)!!
+        assertEquals(1f, back.second)
+        z2.onChanged(back.first, zoomedIn = false)
+        // De retour en 1x, petit et centré : pas de nouveau zoom avant 8 s (au lieu de 4)
+        val again = feed(z2, back.first + 100, 12_000, 1f, 0.15f)!!
+        assertTrue("reparti après ${again.first - back.first} ms", again.first - back.first >= 8_000)
     }
 
     @Test
     fun zoomAutoRevientEnArriere() {
-        val z = AutoZoom()
-        val stops = listOf(1f, 3f, 5f)
-        // Au bord à 5x : retour direct au 1x
-        assertNull(z.update(10_000, stops, 5f, 0.4f, 0.4f, 0f, 0.3f))
-        assertEquals(1f, z.update(10_300, stops, 5f, 0.4f, 0.4f, 0f, 0.3f))
-        // Trop grand à 5x (0,9) : 3x le ramène à 0,54
-        val z2 = AutoZoom()
-        assertNull(z2.update(20_000, stops, 5f, 0.9f, 0f, 0f, 0f))
-        assertEquals(3f, z2.update(20_700, stops, 5f, 0.9f, 0f, 0f, 0f))
+        // Au bord à 5x : un cran en arrière (3x)
+        assertEquals(3f, feed(AutoZoom(), 10_000, 2_000, 5f, 0.4f, wx = 0.42f)!!.second)
+        // Trop grand à 5x : 3x le ramène à 0,57
+        assertEquals(3f, feed(AutoZoom(), 20_000, 3_000, 5f, 0.95f)!!.second)
         // Une seule focale : rien à faire
         assertNull(AutoZoom().update(0, listOf(1f), 1f, 0.1f, 0f, 0f, 0f))
     }

@@ -45,6 +45,17 @@ class ToppApp : Application() {
     lateinit var sensors: PhoneSensors
         private set
 
+    /** Vidéo : 4K (sinon 1080p) et 60 images/s (sinon 30). */
+    private val videoPrefs by lazy { getSharedPreferences("topp", MODE_PRIVATE) }
+    var videoUhd: Boolean
+        get() = videoPrefs.getBoolean("vUhd", true)
+        set(v) = videoPrefs.edit().putBoolean("vUhd", v).apply()
+    var video60: Boolean
+        get() = videoPrefs.getBoolean("v60", false)
+        set(v) = videoPrefs.edit().putBoolean("v60", v).apply()
+    /** Format réellement obtenu, affiché dans les réglages. */
+    val videoInfo = kotlinx.coroutines.flow.MutableStateFlow("")
+
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
 
     fun log(msg: String) {

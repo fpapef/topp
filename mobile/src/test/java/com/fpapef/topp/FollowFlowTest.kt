@@ -97,10 +97,12 @@ class FollowFlowTest {
         val (x0, y0) = controller.offsetFor(0.5f, 0.5f)
         controller.frontCamera = true
         val (x1, y1) = controller.offsetFor(0.5f, 0.5f)
-        assertEquals(x0, x1, 1e-6f)
+        // Frontale : gauche/droite (aperçu en miroir) et haut/bas inversés
+        assertEquals(-x0, x1, 1e-6f)
         assertEquals(-y0, y1, 1e-6f)
         // Correction coupée dans les réglages : même sens qu'à l'arrière
         controller.autoCorrectFront = false
+        assertEquals(x0, controller.offsetFor(0.5f, 0.5f).first, 1e-6f)
         assertEquals(y0, controller.offsetFor(0.5f, 0.5f).second, 1e-6f)
         // Le réglage « Inverser haut et bas » reste appliqué par-dessus
         controller.autoCorrectFront = true
@@ -117,7 +119,7 @@ class FollowFlowTest {
         val t0 = SystemClock.elapsedRealtime()
         // Une personne petite et centrée pendant 2 s : demande du 3x
         var t = t0
-        for (i in 0 until 40) {
+        for (i in 0 until 70) {
             t = t0 + i * 50L
             follow.onFrame(t, listOf(small(0.5f, 1f)), false, 16f / 9f, 1f)
             follow.step(t + 10, false)

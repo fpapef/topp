@@ -365,9 +365,9 @@ class Follow(
     /** Le zoom est arrivé à [z]. */
     fun onZoomDone(z: Float) {
         synchronized(lock) {
+            autoZoom.onChanged(now(), zoomedIn = z > lensZoom + 0.01f)
             lensZoom = z
             zooming = false
-            autoZoom.lastChange = now()
         }
         publish()
     }
@@ -610,7 +610,7 @@ class Follow(
                 val h = (if (delta % 180 == 90) tr.det.box.w else tr.det.box.h) * fz
                 val speed = kotlin.math.hypot(tr.vx, tr.vy) * fz
                 autoZoom.update(t, stops, lensZoom, h, wx, wy, speed)?.let { z ->
-                    requestZoom(z, if (z > lensZoom) "tu es loin" else "tu te rapproches ou tu bouges vite")
+                    requestZoom(z, if (z > lensZoom) "tu es loin" else "tu t'approches ou tu sors du cadre")
                 }
             }
             // Au téléobjectif, un même écart à l'image vaut un plus petit angle : on modère la commande
@@ -634,7 +634,8 @@ class Follow(
         }
         val lostFor = t - lastSeenTarget
         // Perdu au téléobjectif : on repasse au plus large pour te retrouver
-        if (autoZoomActive && lostFor > 300 && lensZoom > stops.first() + 0.01f) {
+        if (autoZoomActive && !zooming && lostFor > 1_200 && lensZoom > stops.first() + 0.01f) {
+            autoZoom.onForcedOut(t)
             requestZoom(stops.first(), "je te cherche")
         }
         // Sorti par un bord : on continue un instant dans la même direction

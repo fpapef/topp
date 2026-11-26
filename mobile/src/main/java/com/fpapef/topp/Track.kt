@@ -265,16 +265,43 @@ class PeopleTracker(private val forgetMs: Long = 1_200) {
 }
 
 /**
- * Zoom automatique du suivi : passe à l'objectif suivant quand le sujet est petit et bien centré,
- * revient en arrière quand il grandit ou s'approche du bord. Les arrêts possibles sont les objectifs
- * du téléphone (1x, 3x, 5x). Le choix tient compte du temps, pour ne pas changer sans arrêt.
+ * Zoom automatique du suivi, pensé pour ne pas faire de va-et-vient :
+ * - la taille du sujet est la médiane des 2 dernières secondes (lever les bras ne compte pas) ;
+ * - on zoome seulement si, après le zoom, le sujet occupe au plus la moitié de la hauteur,
+ *   qu'il est centré et calme depuis 2 s, et pas moins de 4 s après le dernier changement ;
+ * - on dézoome d'un cran s'il reste au bord ou devient trop grand un moment ;
+ * - si un zoom avant doit être annulé peu après, on attend deux fois plus avant de réessayer.
  */
 class AutoZoom {
+    private val hs = ArrayDeque<Pair<Long, Float>>()
     private var smallSince = 0L
     private var bigSince = 0L
+    private var edgeSince = 0L
+    private var lastZoomIn = -100_000L
+    private var backoff = 1
     var lastChange = -100_000L
 
-    fun reset() { smallSince = 0L; bigSince = 0L; lastChange = -100_000L }
+    fun reset() {
+        hs.clear(); smallSince = 0L; bigSince = 0L; edgeSince = 0L
+        lastChange = -100_000L; lastZoomIn = -100_000L; backoff = 1
+    }
+
+    /** L'objectif vient de changer : les tailles mesurées avant ne valent plus rien. */
+    fun onChanged(t: Long, zoomedIn: Boolean) {
+        hs.clear(); smallSince = 0L; bigSince = 0L; edgeSince = 0L
+        lastChange = t
+        if (zoomedIn) lastZoomIn = t
+    }
+
+    /** Un retour en arrière forcé (bord, perte) juste après un zoom avant : on se calme. */
+    fun onForcedOut(t: Long) {
+        if (t - lastZoomIn < 6_000) backoff = (backoff * 2).coerceAtMost(8)
+    }
+
+    private fun median(): Float {
+        val v = hs.map { it.second }.sorted()
+        return if (v.isEmpty()) 0f else v[v.size / 2]
+    }
 
     /**
      * [h] hauteur du sujet (fraction de l'image), [wx], [wy] écart au centre, [speed] vitesse du
@@ -282,24 +309,30 @@ class AutoZoom {
      */
     fun update(t: Long, stops: List<Float>, zoom: Float, h: Float, wx: Float, wy: Float, speed: Float): Float? {
         if (stops.size < 2) return null
+        hs.addLast(t to h)
+        while (hs.isNotEmpty() && t - hs.first().first > 2_000) hs.removeFirst()
+        if (t - lastZoomIn > 30_000) backoff = 1
+        val m = median()
         val i = stops.indices.minBy { abs(stops[it] - zoom) }
-        val edge = abs(wx) > 0.33f || abs(wy) > 0.36f
-        if (i > 0 && (h > 0.8f || edge)) {
-            smallSince = 0L
-            if (bigSince == 0L) bigSince = t
-            if (t - bigSince >= (if (edge) 250 else 600) && t - lastChange > 800) {
-                bigSince = 0L
-                // Au bord : on prend le plus large ; trop gros : l'objectif qui le fait tenir
-                return if (edge) stops[0]
-                else stops.take(i).lastOrNull { h * it / zoom <= 0.65f } ?: stops[0]
-            }
-            return null
+
+        if (i > 0) {
+            // Au bord de l'image un moment : un cran en arrière
+            if (abs(wx) > 0.38f || abs(wy) > 0.4f) {
+                if (edgeSince == 0L) edgeSince = t
+                if (t - edgeSince >= 600) { onForcedOut(t); return stops[i - 1] }
+            } else edgeSince = 0L
+            // Trop grand pendant 1 s : l'objectif qui le fait tenir confortablement
+            if (m > 0.9f && hs.size >= 5) {
+                if (bigSince == 0L) bigSince = t
+                if (t - bigSince >= 1_000) return stops.take(i).lastOrNull { m * it / zoom <= 0.6f } ?: stops[0]
+            } else bigSince = 0L
         }
-        bigSince = 0L
+
         val next = stops.getOrNull(i + 1)
-        if (next != null && h < 0.3f && h * next / zoom <= 0.65f && abs(wx) < 0.15f && abs(wy) < 0.25f && speed < 0.15f) {
+        val calm = abs(wx) < 0.15f && abs(wy) < 0.22f && speed < 0.12f
+        if (next != null && hs.size >= 8 && m * next / zoom <= 0.5f && calm) {
             if (smallSince == 0L) smallSince = t
-            if (t - smallSince >= 1_500 && t - lastChange > 3_000) { smallSince = 0L; return next }
+            if (t - smallSince >= 2_000 && t - lastChange > 4_000L * backoff) { smallSince = 0L; return next }
         } else {
             smallSince = 0L
         }

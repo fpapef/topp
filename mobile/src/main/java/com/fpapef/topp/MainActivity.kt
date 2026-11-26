@@ -21,6 +21,7 @@ import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.DynamicRange
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
@@ -75,6 +76,8 @@ class MainActivity : ComponentActivity() {
     private var recording: Recording? = null
     private var lensFacing = CameraSelector.LENS_FACING_BACK
     private var boundCamera: Camera? = null
+    private var rebindAfterRecording = false
+    private var qualitiesLogged = false
     private var lastRecToggle = 0L
 
     private val permissions = arrayOf(
@@ -106,6 +109,7 @@ class MainActivity : ComponentActivity() {
                 onRecord = ::toggleRecording,
                 onFlipCamera = ::switchCamera,
                 onLens = { setLens(it, byUser = true) },
+                onVideoSettings = ::applyVideoSettings,
             )
         }
         lifecycleScope.launch {
@@ -189,25 +193,68 @@ class MainActivity : ComponentActivity() {
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                     .build()
                     .also { it.setAnalyzer(analysisExecutor, vision) }
-                val recorder = Recorder.Builder()
-                    .setQualitySelector(
-                        QualitySelector.from(Quality.FHD, FallbackStrategy.lowerQualityOrHigherThan(Quality.HD))
-                    )
-                    .build()
-                val vc = VideoCapture.withOutput(recorder)
-                display?.let { vc.targetRotation = it.rotation; an.targetRotation = it.rotation }
-                provider.unbindAll()
                 val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
+                val info = runCatching { provider.getCameraInfo(selector) }.getOrNull()
+                val supported = info?.let { runCatching { Recorder.getVideoCapabilities(it).getSupportedQualities(DynamicRange.SDR) }.getOrNull() }
+                    .orEmpty()
+                if (!qualitiesLogged && supported.isNotEmpty()) {
+                    qualitiesLogged = true
+                    app.log("Qualités vidéo possibles : " + supported.joinToString(", ") { qualityLabel(it) })
+                }
+                val uhd = app.videoUhd && (supported.isEmpty() || Quality.UHD in supported)
+                val can60 = info?.supportedFrameRateRanges?.any { it.lower <= 60 && it.upper >= 60 } == true
+                val wantFps = if (app.video60 && can60) 60 else 30
+                if (app.video60 && !can60) app.log("Vidéo : 60 images/s non proposé par cette caméra, 30 images/s")
+
+                /** Débit généreux : c'est lui qui fait la netteté (le réglage par défaut est souvent bas). */
+                fun makeVc(fps: Int): VideoCapture<Recorder> {
+                    val bitrate = when {
+                        uhd && fps >= 60 -> 80_000_000
+                        uhd -> 50_000_000
+                        fps >= 60 -> 30_000_000
+                        else -> 20_000_000
+                    }
+                    val recorder = Recorder.Builder()
+                        .setQualitySelector(
+                            QualitySelector.fromOrderedList(
+                                listOf(if (uhd) Quality.UHD else Quality.FHD, Quality.FHD, Quality.HD),
+                                FallbackStrategy.lowerQualityOrHigherThan(Quality.HD),
+                            )
+                        )
+                        .setTargetVideoEncodingBitRate(bitrate)
+                        .build()
+                    return VideoCapture.Builder(recorder).setTargetFrameRate(android.util.Range(fps, fps)).build()
+                        .also { v -> display?.let { v.targetRotation = it.rotation } }
+                }
+                display?.let { an.targetRotation = it.rotation }
+                provider.unbindAll()
                 boundCamera?.cameraInfo?.zoomState?.removeObservers(this)
+                var fps = wantFps
+                var vc = makeVc(fps)
+                // Essais : demandé avec suivi → 30 i/s avec suivi → sans le flux de suivi
                 val cam = runCatching { provider.bindToLifecycle(this, selector, preview, vc, an) }
+                    .recoverCatching {
+                        if (fps == 30) throw it
+                        provider.unbindAll()
+                        fps = 30
+                        vc = makeVc(fps)
+                        app.log("Vidéo : 60 images/s refusé avec le suivi, passage à 30 images/s")
+                        provider.bindToLifecycle(this, selector, preview, vc, an)
+                    }
                     .onSuccess { analysis = an }
                     .getOrElse {
-                        // Combinaison refusée par la caméra : on garde l'aperçu et la vidéo, sans suivi caméra
-                        app.log("Caméra : suivi par l'image indisponible (${it.message})")
+                        // Combinaison refusée par la caméra : on garde l'aperçu et la vidéo, sans flux de suivi
+                        app.log("Caméra : flux de suivi indisponible (${it.message}), le suivi utilisera l'aperçu")
                         provider.unbindAll()
                         analysis = null
+                        vc = makeVc(fps)
                         provider.bindToLifecycle(this, selector, preview, vc)
                     }
+                val res = attachedSize(vc)
+                val desc = (res?.let { "${maxOf(it.width, it.height)} × ${minOf(it.width, it.height)}" } ?: "format inconnu") +
+                    ", $fps images/s"
+                app.videoInfo.value = desc
+                app.log("Vidéo : $desc")
                 boundCamera = cam
                 val front = lensFacing == CameraSelector.LENS_FACING_FRONT
                 vision.front = front
@@ -216,12 +263,32 @@ class MainActivity : ComponentActivity() {
                 cam.cameraInfo.zoomState.observe(this) { z -> app.lenses.onZoomRange(z.minZoomRatio, z.maxZoomRatio) }
                 val c = app.controller
                 if (c.frontCamera != front && front && c.autoCorrectFront) {
-                    app.log("Caméra frontale : haut et bas du joystick et des gestes inversés automatiquement")
+                    app.log("Caméra frontale : gauche/droite et haut/bas du joystick et des gestes inversés automatiquement")
                 }
                 c.frontCamera = front
                 videoCapture = vc
             }.onFailure { app.log("Caméra : ${it.message}") }
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    /** Taille réelle du flux vidéo (pour l'afficher et la noter au journal). */
+    @SuppressLint("RestrictedApi")
+    private fun attachedSize(vc: VideoCapture<Recorder>): android.util.Size? = runCatching { vc.attachedSurfaceResolution }.getOrNull()
+
+    private fun qualityLabel(q: Quality) = when (q) {
+        Quality.UHD -> "4K"
+        Quality.FHD -> "1080p"
+        Quality.HD -> "720p"
+        Quality.SD -> "480p"
+        else -> q.toString()
+    }
+
+    /** Réglages vidéo changés : on relance la caméra (après l'enregistrement s'il y en a un). */
+    private fun applyVideoSettings() {
+        if (recording != null) {
+            rebindAfterRecording = true
+            toast("Nouvelle qualité appliquée à la fin de l'enregistrement")
+        } else bindCamera()
     }
 
     /** Zoom réel de chaque image et objectif physique que le téléphone utilise vraiment (1x, 3x, 5x). */
@@ -281,6 +348,7 @@ class MainActivity : ComponentActivity() {
                 is VideoRecordEvent.Finalize -> {
                     app.recording.value = false
                     recording = null
+                    if (rebindAfterRecording) { rebindAfterRecording = false; bindCamera() }
                     if (ev.hasError() && ev.error != VideoRecordEvent.Finalize.ERROR_NONE) {
                         app.log("Vidéo : erreur ${ev.error}")
                     } else {
@@ -341,6 +409,7 @@ private fun ToppScreen(
     onRecord: () -> Unit,
     onFlipCamera: () -> Unit,
     onLens: (Float) -> Unit,
+    onVideoSettings: () -> Unit,
 ) {
     val s by app.ble.state.collectAsStateWithLifecycle()
     val lensStops by app.lenses.stops.collectAsStateWithLifecycle()
@@ -413,12 +482,16 @@ private fun ToppScreen(
                         var fGain by remember { mutableFloatStateOf(app.follow.gain) }
                         var fZoom by remember { mutableStateOf(app.follow.autoZoomEnabled) }
                         var autoFront by remember { mutableStateOf(c.autoCorrectFront) }
+                        var vUhd by remember { mutableStateOf(app.videoUhd) }
+                        var v60 by remember { mutableStateOf(app.video60) }
+                        val vInfo by app.videoInfo.collectAsStateWithLifecycle()
                         SettingsContent(
                             SettingsValues(
                                 speed, invX, invY, s.status != GimbalBle.Status.OFF,
                                 gestureHold = gHold, gestureSens = gSens, gestureInvX = gInvX, gestureInvY = gInvY,
                                 followMode = fMode, followGain = fGain, followAutoZoom = fZoom,
                                 autoCorrectFront = autoFront,
+                                videoUhd = vUhd, video60 = v60, videoInfo = vInfo,
                             ),
                             object : SettingsActions {
                                 override fun speed(v: Float) { speed = v; c.speed = v }
@@ -432,6 +505,8 @@ private fun ToppScreen(
                                 override fun followGain(v: Float) { fGain = v; app.follow.gain = v }
                                 override fun followAutoZoom(v: Boolean) { fZoom = v; app.follow.autoZoomEnabled = v }
                                 override fun autoCorrectFront(v: Boolean) { autoFront = v; c.autoCorrectFront = v }
+                                override fun videoUhd(v: Boolean) { vUhd = v; app.videoUhd = v; onVideoSettings() }
+                                override fun video60(v: Boolean) { v60 = v; app.video60 = v; onVideoSettings() }
                                 override fun followRelearn() = app.follow.relearn()
                                 override fun followRecalibrate() = app.follow.recalibrate()
                                 override fun setHome() { c.setHomeHere() }

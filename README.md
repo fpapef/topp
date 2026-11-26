@@ -20,9 +20,10 @@ Pilote la nacelle **Hohem iSteady V3** depuis ta **Galaxy Watch**, sans l'appli 
 - Dans les réglages, trois modes : **Caméra + montre** (par défaut), **Caméra seule**, ou **GPS seul** pour l'extérieur à plus de 10 m.
 - Avec les caméras arrière, le **zoom automatique** passe au téléobjectif (3x, puis 5x) quand tu es loin, et revient au 1x quand tu te rapproches, bouges vite ou sors de l'image. C'est un vrai changement d'objectif, pas un zoom numérique.
 
-**Objectifs et caméra frontale**
+**Vidéo, objectifs et caméra frontale**
+- Vidéo en 4K ou 1080p, à 30 ou 60 images/s, avec un débit élevé (50 Mb/s en 4K). Le format obtenu s'affiche dans les réglages.
 - Boutons 1x, 3x et 5x sur l'écran pour choisir l'objectif arrière (le grand-angle 0,6x n'est pas proposé).
-- Avec la caméra frontale, le joystick et les gestes vont dans le même sens qu'avec les caméras arrière : le gyroscope du téléphone vérifie le sens pendant que tu pilotes et le corrige tout seul. Réglage « Correction automatique » pour la couper.
+- Avec la caméra frontale, la gauche et la droite sont inversées (l'image est en miroir), et le haut et le bas suivent le sens des caméras arrière : le gyroscope du téléphone le vérifie pendant que tu pilotes. Réglage « Correction automatique » pour la couper.
 
 ![Le suivi sur le téléphone et la montre](docs/suivi.png)
 
@@ -99,6 +100,7 @@ Les écrans sont vérifiés par des captures générées sans appareil (Robolect
 
 ## Versions
 
+- **1.5.2** : vidéo en 4K (ou 1080p) à 30 ou 60 images/s avec un débit élevé, gauche/droite inversées aussi en caméra frontale, zoom automatique sans va-et-vient.
 - **1.5.1** : changement d'objectif en douceur sans arrêter le suivi ; le sens haut/bas en caméra frontale est vérifié et corrigé avec le gyroscope du téléphone.
 - **1.5** : choix de l'objectif arrière (1x, 3x, 5x), zoom automatique par changement d'objectif pendant le suivi, correction automatique du haut et du bas en caméra frontale.
 - **1.4.1** : détection des personnes plus fiable (secours par l'aperçu, appli non compressée), message clair à l'écran et au journal si la détection ne marche pas.

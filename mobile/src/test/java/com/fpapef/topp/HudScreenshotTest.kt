@@ -101,7 +101,7 @@ class HudScreenshotTest {
     }
 
     @Test
-    @Config(qualifiers = "w412dp-h2400dp-port-xhdpi")
+    @Config(qualifiers = "w412dp-h2700dp-port-xhdpi")
     fun settingsSheet() {
         captureRoboImage("$out/4_reglages.png") {
             Themed {
@@ -122,6 +122,8 @@ class HudScreenshotTest {
                             override fun followRecalibrate() {}
                             override fun followAutoZoom(v: Boolean) {}
                             override fun autoCorrectFront(v: Boolean) {}
+                            override fun videoUhd(v: Boolean) {}
+                            override fun video60(v: Boolean) {}
                             override fun setHome() {}
                             override fun relearn() {}
                             override fun toggleConnection() {}
