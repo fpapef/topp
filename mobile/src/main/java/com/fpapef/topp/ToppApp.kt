@@ -53,6 +53,14 @@ class ToppApp : Application() {
     var video60: Boolean
         get() = videoPrefs.getBoolean("v60", false)
         set(v) = videoPrefs.edit().putBoolean("v60", v).apply()
+    /** Ne jamais utiliser le grand-angle 0,6x (bruyant sur le téléphone de l'utilisateur). */
+    var blockUltraWide: Boolean
+        get() = videoPrefs.getBoolean("blockUw", true)
+        set(v) = videoPrefs.edit().putBoolean("blockUw", v).apply()
+    /** Le mode « objectif principal seul » n'a pas donné d'image sur ce téléphone : on ne le retente pas. */
+    var mainOnlyFailed: Boolean
+        get() = videoPrefs.getBoolean("mainOnlyFail", false)
+        set(v) = videoPrefs.edit().putBoolean("mainOnlyFail", v).apply()
     /** Format réellement obtenu, affiché dans les réglages. */
     val videoInfo = kotlinx.coroutines.flow.MutableStateFlow("")
 

@@ -48,6 +48,8 @@ data class SettingsValues(
     val followMode: FollowMode = FollowMode.CAMERA_WATCH,
     val followGain: Float = 1f,
     val followAutoZoom: Boolean = true,
+    val followFraming: Framing = Framing.HALF,
+    val blockUltraWide: Boolean = true,
     val autoCorrectFront: Boolean = true,
     val videoUhd: Boolean = true,
     val video60: Boolean = false,
@@ -68,6 +70,8 @@ interface SettingsActions {
     fun followRelearn()
     fun followRecalibrate()
     fun followAutoZoom(v: Boolean)
+    fun followFraming(f: Framing)
+    fun blockUltraWide(v: Boolean)
     fun autoCorrectFront(v: Boolean)
     fun videoUhd(v: Boolean)
     fun video60(v: Boolean)
@@ -194,6 +198,12 @@ fun SettingsContent(v: SettingsValues, a: SettingsActions) {
             Choice(listOf("4K", "1080p"), if (v.videoUhd) 0 else 1) { a.videoUhd(it == 0) }
             Spacer(Modifier.height(10.dp))
             Choice(listOf("30 images/s", "60 images/s"), if (v.video60) 1 else 0) { a.video60(it == 1) }
+            Spacer(Modifier.height(4.dp))
+            ToggleRow(
+                "Bloquer le grand-angle 0,6x", v.blockUltraWide, a::blockUltraWide,
+                detail = "Topp n'utilise pas ce capteur (bruyant sur ton téléphone) : il prend une caméra arrière " +
+                    "sans 0,6x, ou seulement l'objectif principal si le téléphone ne propose rien d'autre.",
+            )
             Spacer(Modifier.height(10.dp))
             Text(
                 (if (v.videoInfo.isNotBlank()) "En ce moment : ${v.videoInfo}. " else "") +
@@ -240,10 +250,19 @@ fun SettingsContent(v: SettingsValues, a: SettingsActions) {
             }
             Spacer(Modifier.height(6.dp))
             ToggleRow(
-                "Zoom automatique", v.followAutoZoom, a::followAutoZoom,
-                detail = "Caméras arrière : passe au téléobjectif 3x ou 5x quand tu es loin, " +
-                    "revient au 1x quand tu te rapproches ou sors de l'image.",
+                "Cadrage automatique", v.followAutoZoom, a::followAutoZoom,
+                detail = "Caméras arrière : le zoom glisse en continu pour garder le cadrage choisi, " +
+                    "que tu sois près ou loin. Le téléphone passe sur le téléobjectif à 3x et 5x.",
             )
+            if (v.followAutoZoom) {
+                Spacer(Modifier.height(8.dp))
+                val framings = listOf(Framing.FULL, Framing.HALF, Framing.CLOSE)
+                Choice(
+                    listOf("Corps entier", "Tête et buste", "Visage"),
+                    framings.indexOf(v.followFraming).coerceAtLeast(0),
+                ) { a.followFraming(framings[it]) }
+                Spacer(Modifier.height(6.dp))
+            }
             ActionRow("Recaler le GPS sur moi", onClick = a::followRecalibrate)
             Text(
                 "Suivi activé, mets-toi au centre de l'image à plus de 10 m, puis touche ici.",

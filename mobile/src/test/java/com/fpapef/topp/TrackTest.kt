@@ -132,6 +132,11 @@ class TrackTest {
         assertEquals(0.6f, d.aim.x, 0.001f)
         assertEquals(0.2f + 0.6f * 0.14f, d.aim.y, 0.01f)
         assertNotNull(d.wristL)
+        // Repères du cadrage : haut du crâne au-dessus du nez, hanches et pieds vus
+        val b = d.body!!
+        assertTrue(b.headTop < 0.2f + 0.6f * 0.08f)
+        assertEquals(0.2f + 0.6f * 0.55f, b.hipY!!, 0.001f)
+        assertEquals(0.8f, b.footY!!, 0.001f)
         // Trop peu de repères visibles : rien
         assertNull(detectionOf(List(33) { Lm(0.5f, 0.5f, 0.1f) }))
     }
@@ -254,61 +259,104 @@ class TrackTest {
         assertEquals("100x", lensLabel(100f))
     }
 
-    /** Alimente le zoom auto toutes les 100 ms pendant [ms] ; renvoie le premier zoom demandé. */
-    private fun feed(z: AutoZoom, t0: Long, ms: Long, zoom: Float, h: Float, wx: Float = 0f, wy: Float = 0f, speed: Float = 0f,
-                     stops: List<Float> = listOf(1f, 3f, 5f)): Pair<Long, Float>? {
+    // ---------- Cadrage automatique ----------
+
+    private val stops = listOf(1f, 3f, 5f)
+    /** Corps vu à 1x : tête en haut à 0,30, épaules 0,38, hanches 0,55, pieds 0,85. */
+    private val body = Body(headTop = 0.30f, shoulderY = 0.38f, unit = 0.05f, hipY = 0.55f, footY = 0.85f)
+
+    /** Fait tourner le cadrage [ms] millisecondes à 30 Hz ; renvoie tous les zooms commandés. */
+    private fun run(f: Framer, t0: Long, ms: Long, b: Body, framing: Framing, wx: Float = 0f, speed: Float = 0f): List<Float> {
+        val out = ArrayList<Float>()
         var t = t0
         while (t <= t0 + ms) {
-            z.update(t, stops, zoom, h, wx, wy, speed)?.let { return t to it }
-            t += 100
+            val (span, mid) = f.measure(b, framing, f.zoom)
+            out += f.update(t, span, mid, framing, wx, 0f, speed, 10f, stops)
+            t += 33
         }
-        return null
+        return out
     }
 
     @Test
-    fun zoomAutoPasseAuTeleQuandTuEsLoin() {
-        val z = AutoZoom()
-        // Petit, centré, calme : le 3x arrive au bout de 2 s et quelque
-        val (t, zz) = feed(z, 10_000, 4_000, 1f, 0.15f)!!
-        assertEquals(3f, zz)
-        assertTrue("trop tôt : ${t - 10_000} ms", t - 10_000 >= 2_000)
-        z.onChanged(t, zoomedIn = true)
-        // À 3x il fait 0,45 de haut : en 5x il ferait 0,75, trop grand → on reste
-        assertNull(feed(z, t + 100, 10_000, 3f, 0.45f))
+    fun cadrageMesureLeBonMorceauDuCorps() {
+        val f = Framer()
+        val (half, _) = f.measure(body, Framing.HALF, 1f)
+        val (full, _) = f.measure(body, Framing.FULL, 1f)
+        val (close, _) = f.measure(body, Framing.CLOSE, 1f)
+        assertTrue(close < half && half < full)
+        assertEquals(0.55f - (0.30f - 0.0075f), half, 0.001f)
+        // Zoomé à 2x, les hanches (0,55 → 0,60 à l'écran) restent visibles ; à 4x elles sortent (0,70… non)
+        // Pieds hors champ à 2x (0,85 → 1,2) : on estime depuis la tête
+        val (fullZoomed, _) = f.measure(body, Framing.FULL, 2f)
+        assertEquals(0.3f + 9.3f * 0.05f - (0.3f - 0.0075f), fullZoomed, 0.001f)
     }
 
     @Test
-    fun zoomAutoNeZoomePasSurUnSujetQuiBouge() {
-        val z = AutoZoom()
-        assertNull(feed(z, 0, 5_000, 1f, 0.15f, wx = 0.25f, stops = listOf(1f, 3f))) // pas centré
-        assertNull(feed(z, 6_000, 5_000, 1f, 0.15f, speed = 0.5f, stops = listOf(1f, 3f))) // rapide
+    fun cadrageZoomeEnDouceur() {
+        val f = Framer()
+        // Tête et buste : 0,8 / 0,2575 ≈ 3,1x voulu → reste juste sous 3x (pas de bascule d'objectif inutile)
+        val zs = run(f, 10_000, 12_000, body, Framing.HALF)
+        for (i in 1 until zs.size) {
+            val ratio = zs[i] / zs[i - 1]
+            assertTrue("saut de ${(ratio - 1) * 100} %", ratio in 0.98f..1.02f)
+        }
+        assertTrue("zoom final ${zs.last()}", zs.last() in 2.85f..2.999f)
+        // Visage et épaules : plus serré, au-delà de 3x
+        val f2 = Framer()
+        assertTrue(run(f2, 0, 15_000, body, Framing.CLOSE).last() > 3.5f)
     }
 
     @Test
-    fun zoomAutoNeFaitPasDeVaEtVient() {
-        val z = AutoZoom()
-        // Les bras levés une seconde (taille qui saute) ne font pas dézoomer
-        var t = 0L
-        repeat(30) { t += 100; assertNull(z.update(t, listOf(1f, 3f), 3f, if (it in 10..19) 0.95f else 0.5f, 0f, 0f, 0f)) }
-        // Juste après un zoom avant, un passage au bord fait reculer, puis on attend plus longtemps
-        val z2 = AutoZoom()
-        z2.onChanged(100_000, zoomedIn = true)
-        val back = feed(z2, 100_100, 2_000, 3f, 0.4f, wx = 0.42f)!!
-        assertEquals(1f, back.second)
-        z2.onChanged(back.first, zoomedIn = false)
-        // De retour en 1x, petit et centré : pas de nouveau zoom avant 8 s (au lieu de 4)
-        val again = feed(z2, back.first + 100, 12_000, 1f, 0.15f)!!
-        assertTrue("reparti après ${again.first - back.first} ms", again.first - back.first >= 8_000)
+    fun cadrageNeFaitPasDeVaEtVientAutourDe3x() {
+        val f = Framer()
+        run(f, 0, 12_000, body, Framing.HALF) // juste sous 3x
+        // Le sujet bouge un peu d'avant en arrière : le zoom voulu oscille autour de 3x
+        var crossed = 0
+        var below = f.zoom < 3f
+        for (k in 0 until 20) {
+            val b = if (k % 2 == 0) body.copy(hipY = 0.555f) else body.copy(hipY = 0.545f)
+            for (z in run(f, 20_000L + k * 1_000L, 900, b, Framing.HALF)) {
+                if ((z < 3f) != below) { crossed++; below = z < 3f }
+            }
+        }
+        assertEquals(0, crossed)
     }
 
     @Test
-    fun zoomAutoRevientEnArriere() {
-        // Au bord à 5x : un cran en arrière (3x)
-        assertEquals(3f, feed(AutoZoom(), 10_000, 2_000, 5f, 0.4f, wx = 0.42f)!!.second)
-        // Trop grand à 5x : 3x le ramène à 0,57
-        assertEquals(3f, feed(AutoZoom(), 20_000, 3_000, 5f, 0.95f)!!.second)
-        // Une seule focale : rien à faire
-        assertNull(AutoZoom().update(0, listOf(1f), 1f, 0.1f, 0f, 0f, 0f))
+    fun cadrageDesserreSiTuSorsDuCentre() {
+        val centered = run(Framer(), 0, 10_000, body, Framing.HALF).last()
+        val off = run(Framer(), 0, 10_000, body, Framing.HALF, wx = 0.35f).last()
+        assertTrue("centré $centered, décentré $off", off < centered * 0.85f)
+        // Perdu : on élargit vers 1x
+        val f = Framer()
+        run(f, 0, 10_000, body, Framing.HALF)
+        var z = f.zoom
+        var t = 20_000L
+        repeat(150) { t += 33; z = f.widen(t, stops) }
+        assertTrue("élargi à $z", z < 1.2f)
+    }
+
+    // ---------- Grand-angle bloqué ----------
+
+    private val uw = LensInfo("20", 13f)
+    private val wide = LensInfo("21", 24f)
+    private val t3 = LensInfo("22", 69f)
+    private val t5 = LensInfo("23", 111f)
+
+    @Test
+    fun choixDeCameraSansGrandAngle() {
+        val combined = CamOption("0", listOf(uw, wide, t3, t5), logical = true)
+        val uwAlone = CamOption("2", listOf(LensInfo("2", 13f)), logical = false)
+        // Une caméra sans 0,6x mais avec téléobjectifs : on la prend
+        val clean = CamOption("4", listOf(wide, t3, t5), logical = true)
+        assertEquals(CamPlan("4", null, "caméra 4 sans grand-angle"), chooseCamera(listOf(combined, uwAlone, clean), "0", true))
+        // Seulement la caméra combinée : objectif principal seul
+        assertEquals("21", chooseCamera(listOf(combined, uwAlone), "0", true).physicalId)
+        // Blocage coupé : caméra par défaut, telle quelle
+        assertEquals(CamPlan("0", null, ""), chooseCamera(listOf(combined, uwAlone), "0", false))
+        // Caméra par défaut déjà sans 0,6x : rien à faire
+        assertEquals(CamPlan("0", null, ""), chooseCamera(listOf(CamOption("0", listOf(wide), false)), "0", true))
+        assertEquals("0 = 0,5x + 1x + 3x + 5x ; 2 = 0,5x", describeCameras(listOf(combined, uwAlone)))
     }
 
     @Test

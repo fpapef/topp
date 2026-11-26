@@ -285,8 +285,10 @@ fun LensPill(stops: List<Float>, zoom: Float, auto: Boolean, onPick: (Float) -> 
             Modifier.clip(RoundedCornerShape(50)).background(Color(0x73000000)).padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
+            // L'objectif en cours est le plus fort en dessous du zoom ; il affiche le zoom exact (ex. 2,4x)
+            val active = stops.lastOrNull { it <= zoom + 0.02f } ?: stops.first()
             for (z in stops) {
-                val on = kotlin.math.abs(z - zoom) < 0.05f
+                val on = z == active
                 Box(
                     Modifier.size(38.dp).clip(CircleShape)
                         .background(if (on) Color(0x33F2A93B) else Color.Transparent)
@@ -298,7 +300,7 @@ fun LensPill(stops: List<Float>, zoom: Float, auto: Boolean, onPick: (Float) -> 
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        lensLabel(z),
+                        if (on) lensLabel(zoom) else lensLabel(z),
                         style = hud(if (on) 14.sp else 13.sp, if (on) FontWeight.SemiBold else FontWeight.Medium,
                             if (on) Tk.Amber else Tk.Sand, shadow = false),
                     )
@@ -307,7 +309,7 @@ fun LensPill(stops: List<Float>, zoom: Float, auto: Boolean, onPick: (Float) -> 
         }
         if (auto) {
             Spacer(Modifier.height(5.dp))
-            Text("Zoom auto", style = hud(12.sp, FontWeight.Medium, Tk.Kinkeliba))
+            Text("Cadrage auto", style = hud(12.sp, FontWeight.Medium, Tk.Kinkeliba))
         }
     }
 }

@@ -88,7 +88,8 @@ class FollowFlowTest {
     }
 
     private fun followStatus(): FollowStatus {
-        follow.onFrame(SystemClock.elapsedRealtime() + 1, emptyList(), false, 16f / 9f, 3f) // publie l'état
+        follow.step(SystemClock.elapsedRealtime(), false)
+        follow.onFrame(SystemClock.elapsedRealtime() + 1, emptyList(), false, 16f / 9f, 1f) // publie l'état
         return follow.ui.value.status
     }
 
@@ -111,36 +112,37 @@ class FollowFlowTest {
     }
 
     @Test
-    fun zoomAutoPendantLeSuivi() {
+    fun cadrageAutoPendantLeSuivi() {
         val zooms = mutableListOf<Float>()
         val job = kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined).launch { follow.zoomRequest.collect { zooms += it } }
-        follow.setLensStops(listOf(1f, 3f, 5f), 1f)
+        follow.setLensStops(listOf(1f, 3f, 5f), 1f, 10f)
+        follow.framing = Framing.HALF
         assertTrue(follow.start())
-        val t0 = SystemClock.elapsedRealtime()
-        // Une personne petite et centrée pendant 2 s : demande du 3x
-        var t = t0
-        for (i in 0 until 70) {
-            t = t0 + i * 50L
-            follow.onFrame(t, listOf(small(0.5f, 1f)), false, 16f / 9f, 1f)
-            follow.step(t + 10, false)
-        }
-        assertEquals(listOf(3f), zooms)
-        // Pendant la transition (le zoom glisse de 1x à 3x), chaque image arrive avec son zoom :
-        // la nacelle continue de suivre la même personne, sans pause
-        follow.onZoomStarting(byUser = false, target = 3f)
-        for (i in 1..12) {
-            val z = 1f + 2f * i / 12f
+        // Une personne loin : le zoom monte en continu ; chaque image arrive avec le zoom du moment
+        var t = SystemClock.elapsedRealtime()
+        var z = 1f
+        for (i in 0 until 240) {
             t += 33
             follow.onFrame(t, listOf(small(0.5f, z)), false, 16f / 9f, z)
-            assertNotNull("commande pendant la transition ($z)", follow.step(t + 5, false))
+            follow.step(t + 5, false)
+            z = zooms.lastOrNull() ?: 1f
         }
-        follow.onZoomDone(3f)
+        assertTrue("zoom atteint $z", z > 2.5f)
+        for (i in 1 until zooms.size) assertTrue("à-coup", zooms[i] / zooms[i - 1] in 0.97f..1.03f)
         assertEquals(FollowStatus.CAMERA, followStatus())
         assertEquals(1, follow.ui.value.people.size)
-        // À l'écran, la personne est bien trois fois plus grande
-        assertEquals(0.157f * 3, follow.ui.value.people[0].box.h, 0.03f)
         assertTrue(follow.ui.value.autoZoom)
         job.cancel()
+    }
+
+    @Test
+    fun choisirUnObjectifMetLeCadrageEnPause() {
+        follow.setLensStops(listOf(1f, 3f, 5f), 1f, 10f)
+        assertTrue(follow.start())
+        follow.onZoomStarting(byUser = true, target = 3f)
+        follow.onZoomDone(3f)
+        assertTrue(!follow.ui.value.autoZoom)
+        assertTrue(logs.any { it.contains("cadrage automatique en pause") })
     }
 
     @Test

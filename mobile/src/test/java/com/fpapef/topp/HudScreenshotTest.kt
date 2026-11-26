@@ -101,7 +101,7 @@ class HudScreenshotTest {
     }
 
     @Test
-    @Config(qualifiers = "w412dp-h2700dp-port-xhdpi")
+    @Config(qualifiers = "w412dp-h3000dp-port-xhdpi")
     fun settingsSheet() {
         captureRoboImage("$out/4_reglages.png") {
             Themed {
@@ -121,6 +121,8 @@ class HudScreenshotTest {
                             override fun followRelearn() {}
                             override fun followRecalibrate() {}
                             override fun followAutoZoom(v: Boolean) {}
+                            override fun followFraming(f: Framing) {}
+                            override fun blockUltraWide(v: Boolean) {}
                             override fun autoCorrectFront(v: Boolean) {}
                             override fun videoUhd(v: Boolean) {}
                             override fun video60(v: Boolean) {}
@@ -166,7 +168,7 @@ class HudScreenshotTest {
                 ToppHud(
                     ready.copy(
                         recording = true, recSeconds = 75,
-                        lenses = listOf(1f, 3f, 5f), zoom = 3f,
+                        lenses = listOf(1f, 3f, 5f), zoom = 2.4f,
                         follow = FollowUi(
                             on = true, status = FollowStatus.CAMERA, you = true, autoZoom = true,
                             people = listOf(

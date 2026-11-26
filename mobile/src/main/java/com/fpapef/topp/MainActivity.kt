@@ -17,6 +17,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
@@ -120,7 +121,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        lifecycleScope.launch { app.follow.zoomRequest.collect { setLens(it, byUser = false) } }
+        lifecycleScope.launch { app.follow.zoomRequest.collect { app.lenses.setDirect(it) } }
         lifecycleScope.launch {
             app.follow.needLocationPermission.collect {
                 if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
@@ -193,7 +194,10 @@ class MainActivity : ComponentActivity() {
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                     .build()
                     .also { it.setAnalyzer(analysisExecutor, vision) }
-                val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
+                val isFront = lensFacing == CameraSelector.LENS_FACING_FRONT
+                // Caméra arrière sans le grand-angle 0,6x si demandé
+                var plan = if (isFront) CamPlan(null, null, "") else planBackCamera(provider)
+                var selector = selectorFor(plan)
                 val info = runCatching { provider.getCameraInfo(selector) }.getOrNull()
                 val supported = info?.let { runCatching { Recorder.getVideoCapabilities(it).getSupportedQualities(DynamicRange.SDR) }.getOrNull() }
                     .orEmpty()
@@ -234,6 +238,17 @@ class MainActivity : ComponentActivity() {
                 // Essais : demandé avec suivi → 30 i/s avec suivi → sans le flux de suivi
                 val cam = runCatching { provider.bindToLifecycle(this, selector, preview, vc, an) }
                     .recoverCatching {
+                        // L'objectif principal seul est refusé : caméra combinée (le 0,6x n'est jamais choisi par le zoom)
+                        if (plan.physicalId == null) throw it
+                        provider.unbindAll()
+                        app.log("Objectif principal seul refusé par le téléphone (${it.message}) : caméra combinée")
+                        app.mainOnlyFailed = true
+                        plan = plan.copy(physicalId = null)
+                        selector = selectorFor(plan)
+                        vc = makeVc(fps)
+                        provider.bindToLifecycle(this, selector, preview, vc, an)
+                    }
+                    .recoverCatching {
                         if (fps == 30) throw it
                         provider.unbindAll()
                         fps = 30
@@ -259,7 +274,8 @@ class MainActivity : ComponentActivity() {
                 val front = lensFacing == CameraSelector.LENS_FACING_FRONT
                 vision.front = front
                 app.follow.setLens(front)
-                app.lenses.attach(cam, front)
+                app.lenses.attach(cam, front, plan.physicalId)
+                if (plan.physicalId != null) checkMainOnly()
                 cam.cameraInfo.zoomState.observe(this) { z -> app.lenses.onZoomRange(z.minZoomRatio, z.maxZoomRatio) }
                 val c = app.controller
                 if (c.frontCamera != front && front && c.autoCorrectFront) {
@@ -269,6 +285,71 @@ class MainActivity : ComponentActivity() {
                 videoCapture = vc
             }.onFailure { app.log("Caméra : ${it.message}") }
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    /** Caméras arrière que le téléphone propose aux applis, avec leurs objectifs. */
+    @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
+    private fun scanBackCameras(provider: ProcessCameraProvider): List<CamOption> {
+        val cm = getSystemService(android.hardware.camera2.CameraManager::class.java)
+        fun eq(id: String): Float = runCatching {
+            val c = cm.getCameraCharacteristics(id)
+            val f = c.get(android.hardware.camera2.CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: 0f
+            val sz = c.get(android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+            val d = sz?.let { kotlin.math.sqrt(it.width * it.width + it.height * it.height) } ?: 0f
+            if (d > 0f) f * 43.27f / d else 0f
+        }.getOrDefault(0f)
+        return provider.availableCameraInfos.filter { it.lensFacing == CameraSelector.LENS_FACING_BACK }.mapNotNull { ci ->
+            runCatching {
+                val id = Camera2CameraInfo.from(ci).cameraId
+                val phys = cm.getCameraCharacteristics(id).physicalCameraIds
+                val ids = if (phys.isEmpty()) setOf(id) else phys
+                CamOption(id, ids.map { LensInfo(it, eq(it)) }, phys.isNotEmpty())
+            }.getOrNull()
+        }
+    }
+
+    private var camerasLogged = false
+
+    @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
+    private fun planBackCamera(provider: ProcessCameraProvider): CamPlan {
+        val opts = runCatching { scanBackCameras(provider) }.getOrDefault(emptyList())
+        if (!camerasLogged && opts.isNotEmpty()) {
+            camerasLogged = true
+            app.log("Caméras arrière proposées : ${describeCameras(opts)}")
+        }
+        val defaultId = runCatching {
+            Camera2CameraInfo.from(provider.getCameraInfo(CameraSelector.DEFAULT_BACK_CAMERA)).cameraId
+        }.getOrNull()
+        var plan = chooseCamera(opts, defaultId, app.blockUltraWide)
+        if (plan.physicalId != null && app.mainOnlyFailed) {
+            plan = plan.copy(physicalId = null, note = "impossible de séparer le 0,6x sur ce téléphone")
+        }
+        if (plan.note.isNotEmpty()) app.log("Grand-angle 0,6x bloqué : ${plan.note}")
+        return plan
+    }
+
+    @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
+    private fun selectorFor(plan: CamPlan): CameraSelector {
+        val b = CameraSelector.Builder().requireLensFacing(lensFacing)
+        plan.cameraId?.let { id ->
+            b.addCameraFilter { infos ->
+                infos.filter { runCatching { Camera2CameraInfo.from(it).cameraId == id }.getOrDefault(false) }.ifEmpty { infos }
+            }
+        }
+        plan.physicalId?.let { b.setPhysicalCameraId(it) }
+        return b.build()
+    }
+
+    /** Objectif principal seul : si aucune image n'arrive, on revient à la caméra combinée. */
+    private fun checkMainOnly() {
+        lifecycleScope.launch {
+            delay(3_000)
+            if (app.lenses.physicalId != null && app.lenses.resultsSinceAttach == 0) {
+                app.log("Objectif principal seul : pas d'image, retour à la caméra combinée")
+                app.mainOnlyFailed = true
+                if (recording == null) bindCamera() else rebindAfterRecording = true
+            }
+        }
     }
 
     /** Taille réelle du flux vidéo (pour l'afficher et la noter au journal). */
@@ -301,10 +382,16 @@ class MainActivity : ComponentActivity() {
                 request: android.hardware.camera2.CaptureRequest,
                 result: android.hardware.camera2.TotalCaptureResult,
             ) {
+                val pid = app.lenses.physicalId
+                val phys = if (pid != null && android.os.Build.VERSION.SDK_INT >= 31) {
+                    runCatching { result.physicalCameraTotalResults[pid] }.getOrNull()
+                } else null
                 app.lenses.onCaptureResult(
                     result.get(android.hardware.camera2.CaptureResult.SENSOR_TIMESTAMP),
                     if (android.os.Build.VERSION.SDK_INT >= 30) result.get(android.hardware.camera2.CaptureResult.CONTROL_ZOOM_RATIO) else null,
                     result.get(android.hardware.camera2.CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID),
+                    physRatio = if (phys != null && android.os.Build.VERSION.SDK_INT >= 30) phys.get(android.hardware.camera2.CaptureResult.CONTROL_ZOOM_RATIO) else null,
+                    physCropWidth = phys?.get(android.hardware.camera2.CaptureResult.SCALER_CROP_REGION)?.width(),
                 )
             }
         })
@@ -481,6 +568,8 @@ private fun ToppScreen(
                         var fMode by remember { mutableStateOf(app.follow.mode) }
                         var fGain by remember { mutableFloatStateOf(app.follow.gain) }
                         var fZoom by remember { mutableStateOf(app.follow.autoZoomEnabled) }
+                        var fFraming by remember { mutableStateOf(app.follow.framing) }
+                        var blockUw by remember { mutableStateOf(app.blockUltraWide) }
                         var autoFront by remember { mutableStateOf(c.autoCorrectFront) }
                         var vUhd by remember { mutableStateOf(app.videoUhd) }
                         var v60 by remember { mutableStateOf(app.video60) }
@@ -490,6 +579,7 @@ private fun ToppScreen(
                                 speed, invX, invY, s.status != GimbalBle.Status.OFF,
                                 gestureHold = gHold, gestureSens = gSens, gestureInvX = gInvX, gestureInvY = gInvY,
                                 followMode = fMode, followGain = fGain, followAutoZoom = fZoom,
+                                followFraming = fFraming, blockUltraWide = blockUw,
                                 autoCorrectFront = autoFront,
                                 videoUhd = vUhd, video60 = v60, videoInfo = vInfo,
                             ),
@@ -504,6 +594,12 @@ private fun ToppScreen(
                                 override fun followMode(m: FollowMode) { fMode = m; app.follow.mode = m }
                                 override fun followGain(v: Float) { fGain = v; app.follow.gain = v }
                                 override fun followAutoZoom(v: Boolean) { fZoom = v; app.follow.autoZoomEnabled = v }
+                                override fun followFraming(f: Framing) { fFraming = f; app.follow.framing = f }
+                                override fun blockUltraWide(v: Boolean) {
+                                    blockUw = v; app.blockUltraWide = v
+                                    if (v) app.mainOnlyFailed = false // on retente le mode objectif principal seul
+                                    onVideoSettings()
+                                }
                                 override fun autoCorrectFront(v: Boolean) { autoFront = v; c.autoCorrectFront = v }
                                 override fun videoUhd(v: Boolean) { vUhd = v; app.videoUhd = v; onVideoSettings() }
                                 override fun video60(v: Boolean) { v60 = v; app.video60 = v; onVideoSettings() }

@@ -48,7 +48,20 @@ class Detection(
     val sig: FloatArray? = null,
     /** Hauteur / largeur de l'image, pour mesurer les vitesses dans un repère carré. */
     val aspect: Float = 1f,
+    /** Repères verticaux du corps pour le cadrage (y de l'image), null si invisibles. */
+    val body: Body? = null,
 )
+
+/**
+ * Hauteurs utiles au cadrage : haut du crâne, épaules, hanches, pieds, et une unité de longueur
+ * (nez → épaules) qui permet d'estimer ce qui sort de l'image.
+ */
+data class Body(val headTop: Float, val shoulderY: Float, val unit: Float, val hipY: Float?, val footY: Float?) {
+    fun scaled(k: Float): Body {
+        fun c(v: Float) = 0.5f + (v - 0.5f) * k
+        return Body(c(headTop), c(shoulderY), unit * k, hipY?.let(::c), footY?.let(::c))
+    }
+}
 
 /**
  * La même détection vue avec un zoom multiplié par [k] (grossissement autour du centre de l'image).
@@ -57,7 +70,9 @@ class Detection(
 fun Detection.scaled(k: Float): Detection {
     fun c(v: Float) = 0.5f + (v - 0.5f) * k
     fun p(v: Pt?) = v?.let { Pt(c(it.x), c(it.y)) }
-    return Detection(Box(c(box.l), c(box.t), c(box.r), c(box.b)), p(aim)!!, p(wristL), p(wristR), scale * k, sig, aspect)
+    return Detection(
+        Box(c(box.l), c(box.t), c(box.r), c(box.b)), p(aim)!!, p(wristL), p(wristR), scale * k, sig, aspect, body?.scaled(k),
+    )
 }
 
 /** Construit une détection à partir des 33 repères MediaPipe Pose. */
@@ -86,7 +101,14 @@ fun detectionOf(lm: List<Lm>, pixels: IntArray? = null, w: Int = 0, h: Int = 0):
     val wl = if (ok(15)) Pt(lm[15].x, lm[15].y) else null
     val wr = if (ok(16)) Pt(lm[16].x, lm[16].y) else null
     val sig = if (pixels != null && sh != null && w > 0 && h > 0) torsoSig(lm, pixels, w, h) else null
-    return Detection(box, aim, wl, wr, scale.coerceAtLeast(0.02f), sig, aspect)
+    val body = if (sh != null && ok(0)) {
+        // Unité : nez → ligne des épaules, au moins un tiers de la largeur d'épaules (tête penchée)
+        val unit = maxOf(sh.y - lm[0].y, abs(lm[11].x - lm[12].x) / aspect * 0.35f)
+        val hip = if (ok(23) && ok(24)) (lm[23].y + lm[24].y) / 2f else null
+        val feet = (27..32).filter { ok(it) }.map { lm[it].y }.maxOrNull()
+        if (unit > 0.004f) Body(lm[0].y - 0.85f * unit, sh.y, unit, hip, feet) else null
+    } else null
+    return Detection(box, aim, wl, wr, scale.coerceAtLeast(0.02f), sig, aspect, body)
 }
 
 /** Couleur moyenne du buste en 2 × 3 cases : chromaticité rouge, verte et luminosité atténuée. */
@@ -264,80 +286,152 @@ class PeopleTracker(private val forgetMs: Long = 1_200) {
     fun clear() = list.clear()
 }
 
+/** Cadrage choisi : ce qui doit tenir dans la hauteur de l'image. */
+enum class Framing(
+    /** Part de la hauteur de l'image occupée par le cadrage. */
+    val fill: Float,
+    /** Bas du cadre estimé depuis le haut du crâne, en unités nez → épaules (si le repère est hors champ). */
+    val unitsBelowHead: Float,
+) {
+    FULL(0.85f, 9.3f), // corps entier
+    HALF(0.80f, 4.4f), // tête et buste, jusqu'au ventre
+    CLOSE(0.72f, 2.7f), // visage et épaules
+}
+
 /**
- * Zoom automatique du suivi, pensé pour ne pas faire de va-et-vient :
- * - la taille du sujet est la médiane des 2 dernières secondes (lever les bras ne compte pas) ;
- * - on zoome seulement si, après le zoom, le sujet occupe au plus la moitié de la hauteur,
- *   qu'il est centré et calme depuis 2 s, et pas moins de 4 s après le dernier changement ;
- * - on dézoome d'un cran s'il reste au bord ou devient trop grand un moment ;
- * - si un zoom avant doit être annulé peu après, on attend deux fois plus avant de réessayer.
+ * Cadrage automatique : le zoom glisse en continu pour garder le cadrage choisi, quelle que soit
+ * la distance. Entre deux objectifs, c'est du zoom numérique ; à 3x et 5x, le téléphone passe
+ * sur le téléobjectif. Pour éviter que l'objectif change sans arrêt autour de 3x ou 5x, le zoom
+ * reste juste en dessous ou juste au-dessus tant que l'écart est petit.
  */
-class AutoZoom {
-    private val hs = ArrayDeque<Pair<Long, Float>>()
-    private var smallSince = 0L
-    private var bigSince = 0L
-    private var edgeSince = 0L
-    private var lastZoomIn = -100_000L
-    private var backoff = 1
-    var lastChange = -100_000L
+class Framer {
+    private val spans = ArrayDeque<Pair<Long, Float>>()
+    private val mids = ArrayDeque<Pair<Long, Float>>()
+    private var target = Float.NaN // log du zoom visé, lissé
+    private var lastT = 0L
+    private var gliding = false
+    /** Zoom commandé. */
+    var zoom = 1f
+        private set
 
-    fun reset() {
-        hs.clear(); smallSince = 0L; bigSince = 0L; edgeSince = 0L
-        lastChange = -100_000L; lastZoomIn = -100_000L; backoff = 1
+    fun reset(current: Float) {
+        spans.clear(); mids.clear(); target = Float.NaN; lastT = 0L; gliding = false; zoom = current.coerceAtLeast(1f)
     }
 
-    /** L'objectif vient de changer : les tailles mesurées avant ne valent plus rien. */
-    fun onChanged(t: Long, zoomedIn: Boolean) {
-        hs.clear(); smallSince = 0L; bigSince = 0L; edgeSince = 0L
-        lastChange = t
-        if (zoomedIn) lastZoomIn = t
-    }
-
-    /** Un retour en arrière forcé (bord, perte) juste après un zoom avant : on se calme. */
-    fun onForcedOut(t: Long) {
-        if (t - lastZoomIn < 6_000) backoff = (backoff * 2).coerceAtMost(8)
-    }
-
-    private fun median(): Float {
-        val v = hs.map { it.second }.sorted()
-        return if (v.isEmpty()) 0f else v[v.size / 2]
-    }
+    /** Le zoom a été changé à la main ou par la caméra : on repart de là. */
+    fun sync(current: Float) { zoom = current.coerceAtLeast(1f); target = Float.NaN; gliding = false }
 
     /**
-     * [h] hauteur du sujet (fraction de l'image), [wx], [wy] écart au centre, [speed] vitesse du
-     * sujet dans l'image (fraction par seconde). Renvoie le zoom voulu, ou null pour ne rien changer.
+     * Hauteur du cadrage dans le repère 1x (fraction de l'image) et position de son milieu, d'après le
+     * squelette. Le bas du cadre vient du repère s'il est bien dans l'image, sinon des proportions.
      */
-    fun update(t: Long, stops: List<Float>, zoom: Float, h: Float, wx: Float, wy: Float, speed: Float): Float? {
-        if (stops.size < 2) return null
-        hs.addLast(t to h)
-        while (hs.isNotEmpty() && t - hs.first().first > 2_000) hs.removeFirst()
-        if (t - lastZoomIn > 30_000) backoff = 1
-        val m = median()
-        val i = stops.indices.minBy { abs(stops[it] - zoom) }
-
-        if (i > 0) {
-            // Au bord de l'image un moment : un cran en arrière
-            if (abs(wx) > 0.38f || abs(wy) > 0.4f) {
-                if (edgeSince == 0L) edgeSince = t
-                if (t - edgeSince >= 600) { onForcedOut(t); return stops[i - 1] }
-            } else edgeSince = 0L
-            // Trop grand pendant 1 s : l'objectif qui le fait tenir confortablement
-            if (m > 0.9f && hs.size >= 5) {
-                if (bigSince == 0L) bigSince = t
-                if (t - bigSince >= 1_000) return stops.take(i).lastOrNull { m * it / zoom <= 0.6f } ?: stops[0]
-            } else bigSince = 0L
+    fun measure(b: Body, framing: Framing, frameZoom: Float): Pair<Float, Float> {
+        fun inFrame(y: Float) = 0.5f + (y - 0.5f) * frameZoom < 0.96f
+        val est = b.headTop + framing.unitsBelowHead * b.unit
+        val bottom = when (framing) {
+            Framing.FULL -> b.footY?.takeIf(::inFrame)?.let { it + 0.3f * b.unit } ?: est
+            Framing.HALF -> b.hipY?.takeIf(::inFrame) ?: est
+            Framing.CLOSE -> b.shoulderY + 0.9f * b.unit
         }
-
-        val next = stops.getOrNull(i + 1)
-        val calm = abs(wx) < 0.15f && abs(wy) < 0.22f && speed < 0.12f
-        if (next != null && hs.size >= 8 && m * next / zoom <= 0.5f && calm) {
-            if (smallSince == 0L) smallSince = t
-            if (t - smallSince >= 2_000 && t - lastChange > 4_000L * backoff) { smallSince = 0L; return next }
-        } else {
-            smallSince = 0L
-        }
-        return null
+        val top = b.headTop - 0.15f * b.unit // un peu d'air au-dessus de la tête
+        return (bottom - top).coerceAtLeast(0.01f) to (top + bottom) / 2f
     }
+
+    private fun median(q: ArrayDeque<Pair<Long, Float>>) = q.map { it.second }.sorted().let { it[it.size / 2] }
+
+    /** Milieu du cadrage (repère 1x), lissé : c'est le point que la nacelle garde au centre. */
+    fun mid(): Float? = if (mids.isEmpty()) null else median(mids)
+
+    /**
+     * Une mesure par image : renvoie le zoom à appliquer maintenant.
+     * [wx], [wy] écart du sujet au centre à l'écran, [speed] sa vitesse à l'écran (fraction par seconde).
+     */
+    fun update(
+        t: Long, span: Float, mid: Float, framing: Framing, wx: Float, wy: Float, speed: Float,
+        maxZoom: Float, lensSteps: List<Float>,
+    ): Float {
+        spans.addLast(t to span); mids.addLast(t to mid)
+        while (t - spans.first().first > 1_200) spans.removeFirst()
+        while (t - mids.first().first > 600) mids.removeFirst()
+        var want = framing.fill / median(spans)
+        // Marge de sécurité : sujet décentré ou rapide → on desserre un peu pour le garder dans le cadre
+        val off = maxOf(abs(wx) - 0.18f, abs(wy) - 0.2f, 0f)
+        want *= (1f - 1.6f * off - 0.7f * speed).coerceIn(0.5f, 1f)
+        want = want.coerceIn(1f, maxZoom)
+        val lw = kotlin.math.ln(want)
+        val dt = if (lastT == 0L) 0.033f else ((t - lastT) / 1000f).coerceIn(0.001f, 0.2f)
+        lastT = t
+        target = if (target.isNaN()) lw else target + (lw - target) * (dt / (0.7f + dt))
+        return glide(dt, kotlin.math.exp(target), lensSteps, fast = off > 0.12f)
+    }
+
+    /** Sujet perdu : on élargit doucement pour le retrouver. */
+    fun widen(t: Long, lensSteps: List<Float>): Float {
+        val dt = if (lastT == 0L) 0.033f else ((t - lastT) / 1000f).coerceIn(0.001f, 0.2f)
+        lastT = t
+        target = 0f
+        return glide(dt, 1f, lensSteps, fast = true)
+    }
+
+    private fun glide(dt: Float, wantZ: Float, steps: List<Float>, fast: Boolean): Float {
+        var goal = wantZ
+        // Pas de va-et-vient d'objectif autour de 3x / 5x
+        for (b in steps.filter { it > 1.01f }) {
+            if (zoom < b && goal >= b && goal < b * 1.08f) goal = b * 0.985f
+            if (zoom >= b && goal < b && goal > b / 1.08f) goal = b
+        }
+        val err = kotlin.math.ln(goal) - kotlin.math.ln(zoom)
+        // Zone morte avec hystérésis : immobile tant que l'écart reste sous 5 %, et une fois parti,
+        // on va jusqu'au bout (à 1,5 % près) pour ne pas s'arrêter à mi-chemin
+        if (!gliding && abs(err) < 0.05f && !fast) return zoom
+        gliding = abs(err) > 0.015f
+        if (!gliding) return zoom
+        val maxRate = if (fast || err < 0) 0.9f else 0.45f // dézoomer peut aller plus vite que zoomer
+        val step = (err * 2f * dt).coerceIn(-maxRate * dt, maxRate * dt)
+        zoom = kotlin.math.exp(kotlin.math.ln(zoom) + step).coerceAtLeast(1f)
+        return zoom
+    }
+}
+
+/** Objectif physique : identifiant et focale équivalente 24×36 (mm). */
+data class LensInfo(val id: String, val eq: Float) {
+    val ultraWide: Boolean get() = eq in 1f..18f
+    val main: Boolean get() = eq > 18f && eq < 35f
+}
+
+/** Une caméra arrière proposée par le téléphone, avec les objectifs qui la composent. */
+data class CamOption(val cameraId: String, val lenses: List<LensInfo>, val logical: Boolean)
+
+/** Texte pour le journal : « 0 = 0,6x + 1x + 3x + 5x ; 2 = 0,6x ». */
+fun describeCameras(opts: List<CamOption>): String {
+    val main = opts.flatMap { it.lenses }.filter { it.main }.minByOrNull { abs(it.eq - 24f) }?.eq ?: 24f
+    return opts.joinToString(" ; ") { o ->
+        o.cameraId + " = " + o.lenses.sortedBy { it.eq }.joinToString(" + ") { l ->
+            val r = l.eq / main
+            lensLabel(if (r > 1.5f) kotlin.math.round(r) else r)
+        }
+    }
+}
+
+/** Caméra retenue, et éventuellement le seul objectif physique à utiliser. */
+data class CamPlan(val cameraId: String?, val physicalId: String?, val note: String)
+
+/**
+ * Choix de la caméra arrière quand le 0,6x est bloqué :
+ * 1) une caméra sans grand-angle (de préférence avec téléobjectifs) ;
+ * 2) sinon, seulement l'objectif principal de la caméra combinée ;
+ * 3) sinon, la caméra par défaut (le 0,6x n'est jamais choisi par le zoom, mais reste branché).
+ */
+fun chooseCamera(opts: List<CamOption>, defaultId: String?, blockUltraWide: Boolean): CamPlan {
+    val def = opts.firstOrNull { it.cameraId == defaultId } ?: opts.firstOrNull()
+        ?: return CamPlan(null, null, "")
+    if (!blockUltraWide || def.lenses.none { it.ultraWide }) return CamPlan(def.cameraId, null, "")
+    val clean = opts.filter { o -> o.lenses.isNotEmpty() && o.lenses.none { it.ultraWide } && o.lenses.any { it.main } }
+        .maxByOrNull { it.lenses.size }
+    if (clean != null) return CamPlan(clean.cameraId, null, "caméra ${clean.cameraId} sans grand-angle")
+    val main = def.lenses.filter { it.main }.minByOrNull { abs(it.eq - 24f) }
+    if (def.logical && main != null) return CamPlan(def.cameraId, main.id, "objectif principal seul")
+    return CamPlan(def.cameraId, null, "impossible de séparer le 0,6x")
 }
 
 /** Libellé d'un objectif : 1x, 3x, 0,6x. */

@@ -30,8 +30,9 @@ class Lenses(
     private val log: (String) -> Unit,
 ) {
     val stops = MutableStateFlow<List<Float>>(emptyList())
-    /** Objectif choisi (celui qui s'allume à l'écran). */
+    /** Zoom actuel (affiché sur le bouton de l'objectif en cours). */
     val zoom = MutableStateFlow(1f)
+    private var maxRatio = 1f
 
     private var camera: Camera? = null
     private var front = false
@@ -43,6 +44,17 @@ class Lenses(
     @Volatile var applied = 1f
         private set
 
+    // Mode « objectif principal seul » (0,6x bloqué sur une caméra combinée)
+    @Volatile var physicalId: String? = null
+        private set
+    private var physicalActiveWidth = 0
+    private var physicalBad = 0
+    @Volatile var physicalZoomWorks = true
+        private set
+    /** Résultats de capture reçus depuis la dernière liaison (pour vérifier que l'image arrive). */
+    @Volatile var resultsSinceAttach = 0
+        private set
+
     // Zoom réel de chaque image, d'après les résultats de capture (horodatage capteur → zoom)
     private val stamps = LongArray(96)
     private val ratios = FloatArray(96)
@@ -51,10 +63,20 @@ class Lenses(
         private set
 
     /** Caméra tout juste liée. */
-    fun attach(cam: Camera, isFront: Boolean) {
+    fun attach(cam: Camera, isFront: Boolean, physical: String? = null) {
         anim?.cancel()
         camera = cam
         front = isFront
+        physicalId = physical
+        physicalBad = 0
+        physicalZoomWorks = true
+        resultsSinceAttach = 0
+        physicalActiveWidth = physical?.let { id ->
+            runCatching {
+                ctx.getSystemService(CameraManager::class.java).getCameraCharacteristics(id)
+                    .get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)?.width()
+            }.getOrNull()
+        } ?: 0
         zoom.value = 1f
         applied = 1f
         lastResultZoom = 1f
@@ -71,11 +93,12 @@ class Lenses(
     /** Plage de zoom connue (elle arrive juste après l'ouverture de la caméra). */
     fun onZoomRange(min: Float, max: Float) {
         if (camera == null) return
-        val list = if (front) emptyList() else listOf(1f, 3f, 5f).filter { it <= max + 0.01f }.takeIf { it.size > 1 }
-            ?: emptyList()
+        val list = if (front || !physicalZoomWorks) emptyList()
+        else listOf(1f, 3f, 5f).filter { it <= max + 0.01f }.takeIf { it.size > 1 } ?: emptyList()
+        maxRatio = max
         if (list != stops.value) {
             stops.value = list
-            follow.setLensStops(list, zoom.value)
+            follow.setLensStops(list, zoom.value, if (list.isEmpty()) 1f else minOf(max, 10f))
         }
         if (!rangeLogged && !front) {
             rangeLogged = true
@@ -116,8 +139,44 @@ class Lenses(
         }
     }
 
-    /** Résultat de capture : zoom réel de l'image prise à [timestampNs], et objectif utilisé. */
-    fun onCaptureResult(timestampNs: Long?, ratio: Float?, physicalId: String?) {
+    /** Zoom continu demandé par le cadrage automatique (déjà lissé, appliqué tel quel). */
+    fun setDirect(z: Float) {
+        val cam = camera ?: return
+        if (anim?.isActive == true) return // un choix à la main est en cours
+        val r = z.coerceIn(1f, maxOf(1f, minOf(maxRatio, 10f)))
+        applied = r
+        zoom.value = r
+        cam.cameraControl.setZoomRatio(r)
+    }
+
+    /**
+     * Résultat de capture : zoom réel de l'image prise à [timestampNs], et objectif utilisé.
+     * En mode objectif principal seul, [physRatio] / [physCropWidth] disent si le zoom s'applique
+     * vraiment à cet objectif.
+     */
+    fun onCaptureResult(
+        timestampNs: Long?, logicalRatio: Float?, activeId: String?,
+        physRatio: Float? = null, physCropWidth: Int? = null,
+    ) {
+        resultsSinceAttach++
+        var ratio = logicalRatio
+        if (physicalId != null) {
+            val eff = physRatio?.takeIf { it > 1.001f }
+                ?: physCropWidth?.takeIf { it > 0 && physicalActiveWidth > 0 }?.let { physicalActiveWidth.toFloat() / it }
+            if (eff != null) ratio = eff
+            // Zoom demandé nettement, mais l'objectif ne recadre pas : le zoom numérique ne marche pas ici
+            if (applied > 1.6f && (eff ?: 1f) < 1.15f) {
+                if (++physicalBad == 30 && physicalZoomWorks) {
+                    physicalZoomWorks = false
+                    stops.value = emptyList()
+                    follow.setLensStops(emptyList(), 1f)
+                    camera?.cameraControl?.setZoomRatio(1f)
+                    applied = 1f
+                    zoom.value = 1f
+                    log("Zoom impossible avec l'objectif principal seul : débloque le 0,6x dans Réglages → Vidéo pour zoomer")
+                }
+            } else if (applied > 1.6f) physicalBad = 0
+        }
         if (timestampNs != null && ratio != null) {
             synchronized(stamps) {
                 stamps[head] = timestampNs
@@ -126,9 +185,9 @@ class Lenses(
             }
             lastResultZoom = ratio
         }
-        if (physicalId != null && physicalId != activePhysical) {
-            activePhysical = physicalId
-            physicalLabels[physicalId]?.let { log("Objectif utilisé : $it") }
+        if (activeId != null && activeId != activePhysical) {
+            activePhysical = activeId
+            physicalLabels[activeId]?.let { log("Objectif utilisé : $it") }
         }
     }
 

@@ -18,11 +18,12 @@ Pilote la nacelle **Hohem iSteady V3** depuis ta **Galaxy Watch**, sans l'appli 
 - S'il y a plusieurs personnes, la montre te reconnaît : fais coucou avec la main qui porte la montre, Topp compare tes mouvements de poignet à ceux de chaque personne à l'image. Tu peux aussi toucher quelqu'un à l'écran pour le suivre.
 - Si tu sors de l'image, le GPS de la montre prend le relais : la nacelle vise ta position jusqu'à ce que la caméra te retrouve.
 - Dans les réglages, trois modes : **Caméra + montre** (par défaut), **Caméra seule**, ou **GPS seul** pour l'extérieur à plus de 10 m.
-- Avec les caméras arrière, le **zoom automatique** passe au téléobjectif (3x, puis 5x) quand tu es loin, et revient au 1x quand tu te rapproches, bouges vite ou sors de l'image. C'est un vrai changement d'objectif, pas un zoom numérique.
+- Avec les caméras arrière, le **cadrage automatique** garde le cadrage choisi (corps entier, tête et buste, ou visage) quelle que soit ta distance : le zoom glisse en continu, en numérique entre deux objectifs, et le téléphone passe sur le téléobjectif à 3x et 5x. Il desserre si tu bouges vite ou t'approches du bord, et élargit s'il te perd.
 
 **Vidéo, objectifs et caméra frontale**
 - Vidéo en 4K ou 1080p, à 30 ou 60 images/s, avec un débit élevé (50 Mb/s en 4K). Le format obtenu s'affiche dans les réglages.
-- Boutons 1x, 3x et 5x sur l'écran pour choisir l'objectif arrière (le grand-angle 0,6x n'est pas proposé).
+- Boutons 1x, 3x et 5x sur l'écran pour choisir l'objectif arrière ; le bouton actif affiche le zoom exact.
+- Le grand-angle 0,6x peut être bloqué complètement (réglage activé par défaut) : Topp prend une caméra arrière sans ce capteur, ou seulement l'objectif principal si le téléphone ne propose rien d'autre.
 - Avec la caméra frontale, la gauche et la droite sont inversées (l'image est en miroir), et le haut et le bas suivent le sens des caméras arrière : le gyroscope du téléphone le vérifie pendant que tu pilotes. Réglage « Correction automatique » pour la couper.
 
 ![Le suivi sur le téléphone et la montre](docs/suivi.png)
@@ -100,6 +101,7 @@ Les écrans sont vérifiés par des captures générées sans appareil (Robolect
 
 ## Versions
 
+- **1.6** : cadrage automatique en zoom continu (corps entier, tête et buste, visage), blocage du grand-angle 0,6x.
 - **1.5.2** : vidéo en 4K (ou 1080p) à 30 ou 60 images/s avec un débit élevé, gauche/droite inversées aussi en caméra frontale, zoom automatique sans va-et-vient.
 - **1.5.1** : changement d'objectif en douceur sans arrêter le suivi ; le sens haut/bas en caméra frontale est vérifié et corrigé avec le gyroscope du téléphone.
 - **1.5** : choix de l'objectif arrière (1x, 3x, 5x), zoom automatique par changement d'objectif pendant le suivi, correction automatique du haut et du bas en caméra frontale.

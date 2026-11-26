@@ -172,22 +172,27 @@ class Follow(
     private var probe: Probe? = null
     private var probeFails = 0
 
-    // ---------- Objectifs (1x, 3x, 5x) ----------
-    /** Zoom voulu par le suivi : l'écran l'applique à la caméra. */
-    val zoomRequest = MutableSharedFlow<Float>(extraBufferCapacity = 1)
+    // ---------- Cadrage automatique (zoom continu) ----------
+    /** Zoom voulu par le cadrage, en continu : l'écran l'applique à la caméra. */
+    val zoomRequest = MutableSharedFlow<Float>(extraBufferCapacity = 1, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+    /** Cadrage automatique activé (réglage). */
     var autoZoomEnabled: Boolean
         get() = prefs.getBoolean("fAutoZoom", true)
         set(v) { prefs.edit().putBoolean("fAutoZoom", v).apply(); publish() }
+    var framing: Framing
+        get() = runCatching { Framing.valueOf(prefs.getString("fFraming", null) ?: "") }.getOrDefault(Framing.HALF)
+        set(v) { prefs.edit().putString("fFraming", v.name).apply(); framingCache = v }
+    @Volatile private var framingCache = framing
     @Volatile private var stops: List<Float> = emptyList()
-    /** Objectif visé (1x, 3x, 5x), et zoom réel de la dernière image analysée (il varie pendant la transition). */
-    @Volatile private var lensZoom = 1f
+    @Volatile private var maxZoom = 1f
+    /** Zoom réel de la dernière image analysée (le repère de l'écran). */
     @Volatile private var frameZoom = 1f
     private var autoZoomPaused = false
-    private val autoZoom = AutoZoom()
-    private var zooming = false
-    private var zoomingSince = 0L
+    private val framer = Framer()
+    private var lastSentZoom = 1f
+    private var zoomingByHand = false
     private val autoZoomActive: Boolean
-        get() = on && autoZoomEnabled && !autoZoomPaused && modeCache != FollowMode.GPS && !front && stops.size > 1
+        get() = on && autoZoomEnabled && !autoZoomPaused && modeCache != FollowMode.GPS && !front && maxZoom > 1.2f
 
     private class Probe(val t0: Long, val az0: Float, val el0: Float) {
         var az1 = Float.NaN
@@ -224,8 +229,9 @@ class Follow(
             peopleSinceStart = 0
             reported = false
             autoZoomPaused = false
-            autoZoom.reset()
-            zooming = false
+            framer.reset(frameZoom)
+            lastSentZoom = frameZoom
+            zoomingByHand = false
             calib.reset()
             lastCalibFix = 0L
             distance = null
@@ -340,44 +346,42 @@ class Follow(
     }
 
     /** Objectifs disponibles sur la caméra active ([] pour la frontale) et zoom actuel. */
-    fun setLensStops(list: List<Float>, current: Float) {
-        synchronized(lock) { stops = list; lensZoom = current; zooming = false }
+    /** Objectifs de la caméra active ([] pour la frontale), zoom actuel et zoom maximal utilisable. */
+    fun setLensStops(list: List<Float>, current: Float, max: Float = list.maxOrNull() ?: 1f) {
+        synchronized(lock) {
+            stops = list
+            maxZoom = if (list.isEmpty()) 1f else max
+            framer.reset(current)
+            lastSentZoom = current
+        }
         publish()
     }
 
-    /**
-     * Un changement d'objectif commence (le zoom glisse en douceur vers [target]).
-     * Le suivi continue pendant ce temps : chaque image arrive avec son propre zoom.
-     */
+    /** Objectif choisi à la main (bouton 1x, 3x, 5x) : le cadrage automatique se met en pause. */
     fun onZoomStarting(byUser: Boolean, target: Float) {
         synchronized(lock) {
-            zooming = true
-            zoomingSince = now()
-            autoZoom.lastChange = zoomingSince
-            if (byUser && on && !autoZoomPaused && autoZoomEnabled && stops.size > 1) {
+            zoomingByHand = byUser
+            if (byUser && on && !autoZoomPaused && autoZoomEnabled && maxZoom > 1.2f) {
                 autoZoomPaused = true
-                log("Objectif ${lensLabel(target)} choisi à la main : zoom automatique en pause jusqu'au prochain suivi")
+                log("Objectif ${lensLabel(target)} choisi à la main : cadrage automatique en pause jusqu'au prochain suivi")
             }
         }
         publish()
     }
 
-    /** Le zoom est arrivé à [z]. */
     fun onZoomDone(z: Float) {
         synchronized(lock) {
-            autoZoom.onChanged(now(), zoomedIn = z > lensZoom + 0.01f)
-            lensZoom = z
-            zooming = false
+            zoomingByHand = false
+            framer.sync(z)
+            lastSentZoom = z
         }
         publish()
     }
 
-    private fun requestZoom(z: Float, why: String) {
-        if (zooming || abs(z - lensZoom) < 0.01f) return
-        zooming = true
-        zoomingSince = now()
-        autoZoom.lastChange = zoomingSince
-        if (zoomRequest.tryEmit(z)) log("Zoom auto : ${lensLabel(z)} ($why)") else zooming = false
+    private fun sendZoom(z: Float) {
+        if (abs(z - lastSentZoom) < 0.004f) return
+        lastSentZoom = z
+        zoomRequest.tryEmit(z)
     }
 
     private fun disp(v: Float) = 0.5f + (v - 0.5f) * frameZoom
@@ -545,7 +549,6 @@ class Follow(
 
     internal fun step(t: Long, manualNow: Boolean): ByteArray? {
         if (!ble.isReady) { status = FollowStatus.NO_GIMBAL; probe = null; return null }
-        if (zooming && t - zoomingSince > 2_500) zooming = false // le zoom n'a pas répondu
         val m = mapping() ?: run {
             status = FollowStatus.LEARNING
             if (manualNow) { probe = null; return null }
@@ -603,15 +606,20 @@ class Follow(
             distance = null
             val p = tr.predicted(t + 80)
             val fz = frameZoom
+            val framingOn = autoZoomActive && !zoomingByHand
+            // Avec le cadrage, c'est le milieu du cadre choisi (ex. de la tête au ventre) qu'on centre
+            val body = tr.det.body
+            val midOffset = if (framingOn && body != null) {
+                (framer.mid() ?: framer.measure(body, framingCache, fz).second) - tr.aim.y
+            } else null
             // Position à l'écran (au zoom de la dernière image)
-            val (wx, wy) = toWorld(disp(p.x) - 0.5f, disp(p.y) - AIM_Y, delta)
+            val (wx, wy) = if (midOffset != null) toWorld(disp(p.x) - 0.5f, disp(p.y + midOffset) - 0.5f, delta)
+            else toWorld(disp(p.x) - 0.5f, disp(p.y) - AIM_Y, delta)
             calibrate(t, wx / fz)
-            if (autoZoomActive && !zooming) {
-                val h = (if (delta % 180 == 90) tr.det.box.w else tr.det.box.h) * fz
+            if (framingOn && body != null && tr.seenAt > t - 300) {
+                val (span, mid) = framer.measure(body, framingCache, fz)
                 val speed = kotlin.math.hypot(tr.vx, tr.vy) * fz
-                autoZoom.update(t, stops, lensZoom, h, wx, wy, speed)?.let { z ->
-                    requestZoom(z, if (z > lensZoom) "tu es loin" else "tu t'approches ou tu sors du cadre")
-                }
+                sendZoom(framer.update(t, span, mid, framingCache, wx, wy, speed, maxZoom, stops))
             }
             // Au téléobjectif, un même écart à l'image vaut un plus petit angle : on modère la commande
             val g = gain / fz.coerceAtLeast(1f).toDouble().pow(0.75).toFloat()
@@ -634,9 +642,9 @@ class Follow(
         }
         val lostFor = t - lastSeenTarget
         // Perdu au téléobjectif : on repasse au plus large pour te retrouver
-        if (autoZoomActive && !zooming && lostFor > 1_200 && lensZoom > stops.first() + 0.01f) {
-            autoZoom.onForcedOut(t)
-            requestZoom(stops.first(), "je te cherche")
+        // Perdu un moment : le cadrage élargit doucement pour te retrouver
+        if (autoZoomActive && !zoomingByHand && lostFor > 1_200 && framer.zoom > 1.01f) {
+            sendZoom(framer.widen(t, stops))
         }
         // Sorti par un bord : on continue un instant dans la même direction
         if (lostFor < 700 && abs(lastAimWorldX) * frameZoom > 0.28f) {
