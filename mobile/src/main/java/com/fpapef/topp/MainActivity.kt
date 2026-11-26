@@ -17,6 +17,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -71,6 +74,7 @@ class MainActivity : ComponentActivity() {
     private var orientationListener: OrientationEventListener? = null
     private var recording: Recording? = null
     private var lensFacing = CameraSelector.LENS_FACING_BACK
+    private var boundCamera: Camera? = null
     private var lastRecToggle = 0L
 
     private val permissions = arrayOf(
@@ -101,6 +105,7 @@ class MainActivity : ComponentActivity() {
                 onPreview = { pv -> previewView = pv; if (granted(Manifest.permission.CAMERA)) bindCamera() },
                 onRecord = ::toggleRecording,
                 onFlipCamera = ::switchCamera,
+                onLens = { setLens(it, byUser = true) },
             )
         }
         lifecycleScope.launch {
@@ -111,6 +116,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        lifecycleScope.launch { app.follow.zoomRequest.collect { setLens(it, byUser = false) } }
         lifecycleScope.launch {
             app.follow.needLocationPermission.collect {
                 if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
@@ -167,8 +173,9 @@ class MainActivity : ComponentActivity() {
                 val wide = ResolutionSelector.Builder()
                     .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
                     .build()
-                val preview = Preview.Builder().setResolutionSelector(wide).build()
-                    .also { it.setSurfaceProvider(pv.surfaceProvider) }
+                val pb = Preview.Builder().setResolutionSelector(wide)
+                watchActiveLens(pb)
+                val preview = pb.build().also { it.setSurfaceProvider(pv.surfaceProvider) }
                 val an = ImageAnalysis.Builder()
                     .setResolutionSelector(
                         ResolutionSelector.Builder()
@@ -191,21 +198,48 @@ class MainActivity : ComponentActivity() {
                 display?.let { vc.targetRotation = it.rotation; an.targetRotation = it.rotation }
                 provider.unbindAll()
                 val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
-                runCatching { provider.bindToLifecycle(this, selector, preview, vc, an) }
+                boundCamera?.cameraInfo?.zoomState?.removeObservers(this)
+                val cam = runCatching { provider.bindToLifecycle(this, selector, preview, vc, an) }
                     .onSuccess { analysis = an }
-                    .onFailure {
+                    .getOrElse {
                         // Combinaison refusée par la caméra : on garde l'aperçu et la vidéo, sans suivi caméra
                         app.log("Caméra : suivi par l'image indisponible (${it.message})")
                         provider.unbindAll()
-                        provider.bindToLifecycle(this, selector, preview, vc)
                         analysis = null
+                        provider.bindToLifecycle(this, selector, preview, vc)
                     }
-                vision.front = lensFacing == CameraSelector.LENS_FACING_FRONT
-                app.follow.setLens(vision.front)
+                boundCamera = cam
+                val front = lensFacing == CameraSelector.LENS_FACING_FRONT
+                vision.front = front
+                app.follow.setLens(front)
+                app.lenses.attach(cam, front)
+                cam.cameraInfo.zoomState.observe(this) { z -> app.lenses.onZoomRange(z.minZoomRatio, z.maxZoomRatio) }
+                val c = app.controller
+                if (c.frontCamera != front && front && c.autoCorrectFront) {
+                    app.log("Caméra frontale : haut et bas du joystick et des gestes inversés automatiquement")
+                }
+                c.frontCamera = front
                 videoCapture = vc
             }.onFailure { app.log("Caméra : ${it.message}") }
         }, ContextCompat.getMainExecutor(this))
     }
+
+    /** Note au journal l'objectif physique que le téléphone utilise vraiment (1x, 3x, 5x). */
+    @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
+    private fun watchActiveLens(pb: Preview.Builder) {
+        if (android.os.Build.VERSION.SDK_INT < 29) return
+        Camera2Interop.Extender(pb).setSessionCaptureCallback(object : android.hardware.camera2.CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                session: android.hardware.camera2.CameraCaptureSession,
+                request: android.hardware.camera2.CaptureRequest,
+                result: android.hardware.camera2.TotalCaptureResult,
+            ) {
+                app.lenses.onActivePhysical(result.get(android.hardware.camera2.CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID))
+            }
+        })
+    }
+
+    private fun setLens(z: Float, byUser: Boolean) = app.lenses.set(z, byUser, ContextCompat.getMainExecutor(this))
 
     private fun switchCamera() {
         if (recording != null) { toast("Arrête l'enregistrement d'abord"); return }
@@ -300,8 +334,11 @@ private fun ToppScreen(
     onPreview: (PreviewView) -> Unit,
     onRecord: () -> Unit,
     onFlipCamera: () -> Unit,
+    onLens: (Float) -> Unit,
 ) {
     val s by app.ble.state.collectAsStateWithLifecycle()
+    val lensStops by app.lenses.stops.collectAsStateWithLifecycle()
+    val zoom by app.lenses.zoom.collectAsStateWithLifecycle()
     val rec by app.recording.collectAsStateWithLifecycle()
     val recStart by app.recStartedAt.collectAsStateWithLifecycle()
     val logs by app.logs.collectAsStateWithLifecycle()
@@ -327,6 +364,8 @@ private fun ToppScreen(
         recentering = c.recentering,
         gesturesActive = gestures,
         follow = follow,
+        lenses = lensStops,
+        zoom = zoom,
     )
     val actions = remember {
         object : UiActions {
@@ -339,6 +378,7 @@ private fun ToppScreen(
             override fun joystick(x: Float, y: Float) = c.joystick(x, y)
             override fun follow() { app.follow.toggle() }
             override fun pickPerson(x: Float, y: Float) = app.follow.pick(x, y)
+            override fun lens(z: Float) = onLens(z)
         }
     }
 
@@ -365,11 +405,14 @@ private fun ToppScreen(
                         var gInvY by remember { mutableStateOf(c.gestureInvY) }
                         var fMode by remember { mutableStateOf(app.follow.mode) }
                         var fGain by remember { mutableFloatStateOf(app.follow.gain) }
+                        var fZoom by remember { mutableStateOf(app.follow.autoZoomEnabled) }
+                        var autoFront by remember { mutableStateOf(c.autoCorrectFront) }
                         SettingsContent(
                             SettingsValues(
                                 speed, invX, invY, s.status != GimbalBle.Status.OFF,
                                 gestureHold = gHold, gestureSens = gSens, gestureInvX = gInvX, gestureInvY = gInvY,
-                                followMode = fMode, followGain = fGain,
+                                followMode = fMode, followGain = fGain, followAutoZoom = fZoom,
+                                autoCorrectFront = autoFront,
                             ),
                             object : SettingsActions {
                                 override fun speed(v: Float) { speed = v; c.speed = v }
@@ -381,6 +424,8 @@ private fun ToppScreen(
                                 override fun gestureInvY(v: Boolean) { gInvY = v; c.gestureInvY = v }
                                 override fun followMode(m: FollowMode) { fMode = m; app.follow.mode = m }
                                 override fun followGain(v: Float) { fGain = v; app.follow.gain = v }
+                                override fun followAutoZoom(v: Boolean) { fZoom = v; app.follow.autoZoomEnabled = v }
+                                override fun autoCorrectFront(v: Boolean) { autoFront = v; c.autoCorrectFront = v }
                                 override fun followRelearn() = app.follow.relearn()
                                 override fun followRecalibrate() = app.follow.recalibrate()
                                 override fun setHome() { c.setHomeHere() }

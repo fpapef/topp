@@ -13,6 +13,7 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -37,6 +38,8 @@ data class FollowUi(
     val distance: Int? = null,
     /** Pourquoi on ne voit personne : "error" (détection en panne), "noframes" (pas d'image), null. */
     val vision: String? = null,
+    /** Le zoom automatique choisit l'objectif en ce moment. */
+    val autoZoom: Boolean = false,
 ) {
     val needsMotion: Boolean get() = on && mode == FollowMode.CAMERA_WATCH
     val needsGps: Boolean get() = on && mode != FollowMode.CAMERA
@@ -169,6 +172,22 @@ class Follow(
     private var probe: Probe? = null
     private var probeFails = 0
 
+    // ---------- Objectifs (1x, 3x, 5x) ----------
+    /** Zoom voulu par le suivi : l'écran l'applique à la caméra. */
+    val zoomRequest = MutableSharedFlow<Float>(extraBufferCapacity = 1)
+    var autoZoomEnabled: Boolean
+        get() = prefs.getBoolean("fAutoZoom", true)
+        set(v) { prefs.edit().putBoolean("fAutoZoom", v).apply(); publish() }
+    @Volatile private var stops: List<Float> = emptyList()
+    @Volatile private var zoom = 1f
+    private var autoZoomPaused = false
+    private val autoZoom = AutoZoom()
+    private var zoomBusy = false
+    private var zoomBusySince = 0L
+    private var ignoreFramesUntil = 0L
+    private val autoZoomActive: Boolean
+        get() = on && autoZoomEnabled && !autoZoomPaused && modeCache != FollowMode.GPS && !front && stops.size > 1
+
     private class Probe(val t0: Long, val az0: Float, val el0: Float) {
         var az1 = Float.NaN
         var el1 = Float.NaN
@@ -203,6 +222,9 @@ class Follow(
             framesSinceStart = 0
             peopleSinceStart = 0
             reported = false
+            autoZoomPaused = false
+            autoZoom.reset()
+            zoomBusy = false
             calib.reset()
             lastCalibFix = 0L
             distance = null
@@ -313,6 +335,57 @@ class Follow(
         publish()
     }
 
+    /** Objectifs disponibles sur la caméra active ([] pour la frontale) et zoom actuel. */
+    fun setLensStops(list: List<Float>, current: Float) {
+        synchronized(lock) { stops = list; zoom = current; zoomBusy = false }
+        publish()
+    }
+
+    /** Un changement d'objectif commence : on met le suivi en pause le temps qu'il se fasse. */
+    fun onZoomStarting(byUser: Boolean) {
+        synchronized(lock) {
+            zoomBusy = true
+            zoomBusySince = now()
+            autoZoom.lastChange = zoomBusySince
+            if (byUser && on && !autoZoomPaused && autoZoomEnabled && stops.size > 1) {
+                autoZoomPaused = true
+                log("Objectif choisi à la main : zoom automatique en pause jusqu'au prochain suivi")
+            }
+        }
+        publish()
+    }
+
+    /** Le nouvel objectif est en place : l'image a grossi de new/old, on recale les personnes suivies. */
+    fun onZoomApplied(old: Float, new: Float) {
+        synchronized(lock) {
+            val t = now()
+            val k = if (old > 0f) new / old else 1f
+            if (abs(k - 1f) > 0.01f) {
+                val hadTarget = target()?.let { t - it.seenAt < 600 } == true
+                people.rescale(k, t)
+                lastAimWorldX *= k
+                if (hadTarget) lastSeenTarget = t
+            }
+            zoom = new
+            zoomBusy = false
+            ignoreFramesUntil = t + 250 // images encore en route avec l'ancien objectif
+            autoZoom.lastChange = t
+        }
+        publish()
+    }
+
+    fun onZoomFailed() {
+        synchronized(lock) { zoomBusy = false }
+    }
+
+    private fun requestZoom(z: Float, why: String) {
+        if (zoomBusy || abs(z - zoom) < 0.01f) return
+        zoomBusy = true
+        zoomBusySince = now()
+        autoZoom.lastChange = zoomBusySince
+        if (zoomRequest.tryEmit(z)) log("Zoom auto : ${lensLabel(z)} ($why)") else zoomBusy = false
+    }
+
     /** Une image analysée : personnes détectées, dans le repère de l'écran. */
     fun onFrame(t: Long, dets: List<Detection>, isFront: Boolean, imageAspect: Float) {
         if (!on) return
@@ -321,6 +394,8 @@ class Follow(
             aspect = imageAspect
             lastFrameAt = t
             framesSinceStart++
+            // Pendant un changement d'objectif, les images n'ont pas toutes la même échelle : on les saute
+            if (zoomBusy || t < ignoreFramesUntil) return@synchronized
             peopleSinceStart = max(peopleSinceStart, dets.size)
             people.update(t, dets)
             if (t - lastIdEval >= 500) { lastIdEval = t; evalIdentity(t) }
@@ -472,6 +547,8 @@ class Follow(
 
     internal fun step(t: Long, manualNow: Boolean): ByteArray? {
         if (!ble.isReady) { status = FollowStatus.NO_GIMBAL; probe = null; return null }
+        if (zoomBusy && t - zoomBusySince > 2_000) zoomBusy = false // l'objectif n'a pas répondu
+        if (zoomBusy || t < ignoreFramesUntil) return null // on attend le nouvel objectif, nacelle à l'arrêt
         val m = mapping() ?: run {
             status = FollowStatus.LEARNING
             if (manualNow) { probe = null; return null }
@@ -530,7 +607,15 @@ class Follow(
             val p = tr.predicted(t + 80)
             val (wx, wy) = toWorld(p.x - 0.5f, p.y - AIM_Y, delta)
             calibrate(t, wx)
-            val g = gain
+            if (autoZoomActive) {
+                val h = if (delta % 180 == 90) tr.det.box.w else tr.det.box.h
+                val speed = kotlin.math.hypot(tr.vx, tr.vy)
+                autoZoom.update(t, stops, zoom, h, wx, wy, speed)?.let { z ->
+                    requestZoom(z, if (z > zoom) "tu es loin" else "tu te rapproches ou tu bouges vite")
+                }
+            }
+            // Au téléobjectif, un même écart à l'image vaut un plus petit angle : on modère la commande
+            val g = gain / zoom.coerceAtLeast(1f).toDouble().pow(0.75).toFloat()
             val cx = if (abs(wx) < 0.025f) 0f else (wx * g).coerceIn(-0.5f, 0.5f)
             val cy = if (abs(wy) < 0.04f) 0f else (wy * g).coerceIn(-0.5f, 0.5f)
             val (x, y) = m.command(cx, cy)
@@ -547,6 +632,11 @@ class Follow(
             return null
         }
         val lostFor = t - lastSeenTarget
+        // Perdu au téléobjectif : on repasse au plus large pour te retrouver
+        if (autoZoomActive && lostFor > 300 && zoom > stops.first() + 0.01f) {
+            requestZoom(stops.first(), "je te cherche")
+            if (zoomBusy) { status = FollowStatus.SEARCHING; return null }
+        }
         // Sorti par un bord : on continue un instant dans la même direction
         if (lostFor < 700 && abs(lastAimWorldX) > 0.28f) {
             status = FollowStatus.SEARCHING
@@ -613,7 +703,7 @@ class Follow(
         val d = Geo.distance(ph.lat, ph.lon, lat, lon)
         if (d < 8.0) return
         lastCalibFix = w.at
-        calib.add(Geo.bearing(ph.lat, ph.lon, lat, lon).toFloat() - (o.first + wx * hfov))
+        calib.add(Geo.bearing(ph.lat, ph.lon, lat, lon).toFloat() - (o.first + wx * hfov / zoom))
         if (calib.count == 3) log("GPS calé sur la caméra (${d.roundToInt()} m)")
     }
 
@@ -631,6 +721,7 @@ class Follow(
                 aspect = aspect,
                 you = you,
                 distance = distance,
+                autoZoom = autoZoomActive,
                 vision = when {
                     !on || modeCache == FollowMode.GPS -> null
                     visionError != null -> "error"

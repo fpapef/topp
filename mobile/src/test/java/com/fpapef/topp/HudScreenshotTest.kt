@@ -37,6 +37,7 @@ class HudScreenshotTest {
         override fun joystick(x: Float, y: Float) {}
         override fun follow() {}
         override fun pickPerson(x: Float, y: Float) {}
+        override fun lens(z: Float) {}
     }
 
     /** Fausse image de caméra : ciel, horizon, bâtiments, sol de latérite. */
@@ -100,7 +101,7 @@ class HudScreenshotTest {
     }
 
     @Test
-    @Config(qualifiers = "w412dp-h2000dp-port-xhdpi")
+    @Config(qualifiers = "w412dp-h2400dp-port-xhdpi")
     fun settingsSheet() {
         captureRoboImage("$out/4_reglages.png") {
             Themed {
@@ -119,6 +120,8 @@ class HudScreenshotTest {
                             override fun followGain(v: Float) {}
                             override fun followRelearn() {}
                             override fun followRecalibrate() {}
+                            override fun followAutoZoom(v: Boolean) {}
+                            override fun autoCorrectFront(v: Boolean) {}
                             override fun setHome() {}
                             override fun relearn() {}
                             override fun toggleConnection() {}
@@ -161,8 +164,9 @@ class HudScreenshotTest {
                 ToppHud(
                     ready.copy(
                         recording = true, recSeconds = 75,
+                        lenses = listOf(1f, 3f, 5f), zoom = 3f,
                         follow = FollowUi(
-                            on = true, status = FollowStatus.CAMERA, you = true,
+                            on = true, status = FollowStatus.CAMERA, you = true, autoZoom = true,
                             people = listOf(
                                 PersonUi(1, Box(0.42f, 0.2f, 0.57f, 0.95f), target = true),
                                 PersonUi(2, Box(0.72f, 0.33f, 0.8f, 0.78f), target = false),
@@ -182,8 +186,9 @@ class HudScreenshotTest {
             Themed {
                 ToppHud(
                     ready.copy(
+                        lenses = listOf(1f, 3f, 5f), zoom = 1f,
                         follow = FollowUi(
-                            on = true, status = FollowStatus.IDENTIFY, aspect = 9f / 16f,
+                            on = true, status = FollowStatus.IDENTIFY, aspect = 9f / 16f, autoZoom = true,
                             people = listOf(
                                 PersonUi(1, Box(0.1f, 0.42f, 0.36f, 0.78f), target = false),
                                 PersonUi(2, Box(0.55f, 0.38f, 0.9f, 0.82f), target = false),

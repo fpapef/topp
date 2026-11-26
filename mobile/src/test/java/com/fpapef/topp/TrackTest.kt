@@ -243,4 +243,70 @@ class TrackTest {
         ))
         assertEquals(0.55f, pickInitial(pt.tracks)!!.aim.x, 0.01f)
     }
+
+    // ---------- Objectifs ----------
+
+    @Test
+    fun libellesDesObjectifs() {
+        assertEquals("1x", lensLabel(1f))
+        assertEquals("3x", lensLabel(3f))
+        assertEquals("0,6x", lensLabel(0.6f))
+        assertEquals("100x", lensLabel(100f))
+    }
+
+    @Test
+    fun zoomAutoPasseAuTeleQuandTuEsLoin() {
+        val z = AutoZoom()
+        val stops = listOf(1f, 3f, 5f)
+        var t = 10_000L
+        // Petit, centré, immobile : on attend 1,5 s avant de zoomer
+        assertNull(z.update(t, stops, 1f, 0.15f, 0.02f, 0.01f, 0.02f))
+        t += 1_000
+        assertNull(z.update(t, stops, 1f, 0.15f, 0.02f, 0.01f, 0.02f))
+        t += 600
+        assertEquals(3f, z.update(t, stops, 1f, 0.15f, 0.02f, 0.01f, 0.02f))
+        z.lastChange = t
+        // À 3x, il fait 0,45 de haut : trop grand pour passer en 5x (0,75 > 0,65)
+        t += 5_000
+        repeat(5) { t += 500; assertNull(z.update(t, stops, 3f, 0.45f, 0f, 0f, 0f)) }
+    }
+
+    @Test
+    fun zoomAutoNeZoomePasSurUnSujetQuiBouge() {
+        val z = AutoZoom()
+        var t = 0L
+        repeat(10) { t += 400; assertNull(z.update(t, listOf(1f, 3f), 1f, 0.15f, 0.25f, 0f, 0f)) } // pas centré
+        repeat(10) { t += 400; assertNull(z.update(t, listOf(1f, 3f), 1f, 0.15f, 0f, 0f, 0.5f)) } // rapide
+    }
+
+    @Test
+    fun zoomAutoRevientEnArriere() {
+        val z = AutoZoom()
+        val stops = listOf(1f, 3f, 5f)
+        // Au bord à 5x : retour direct au 1x
+        assertNull(z.update(10_000, stops, 5f, 0.4f, 0.4f, 0f, 0.3f))
+        assertEquals(1f, z.update(10_300, stops, 5f, 0.4f, 0.4f, 0f, 0.3f))
+        // Trop grand à 5x (0,9) : 3x le ramène à 0,54
+        val z2 = AutoZoom()
+        assertNull(z2.update(20_000, stops, 5f, 0.9f, 0f, 0f, 0f))
+        assertEquals(3f, z2.update(20_700, stops, 5f, 0.9f, 0f, 0f, 0f))
+        // Une seule focale : rien à faire
+        assertNull(AutoZoom().update(0, listOf(1f), 1f, 0.1f, 0f, 0f, 0f))
+    }
+
+    @Test
+    fun changementDObjectifGardeLaPersonne() {
+        val pt = PeopleTracker()
+        var t = 0L
+        for (i in 0 until 10) { t += 50; pt.update(t, listOf(detectionOf(person(0.55f, 0.4f, 0.2f))!!)) }
+        val id = pt.tracks[0].id
+        // Passage de 1x à 3x : la personne grossit trois fois autour du centre
+        t += 400
+        pt.rescale(3f, t)
+        val zoomed = detectionOf(person(0.5f + 0.05f * 3, 0.5f + (0.4f - 0.5f) * 3, 0.2f * 3))!!
+        t += 50
+        val tracks = pt.update(t, listOf(zoomed))
+        assertEquals(1, tracks.size)
+        assertEquals(id, tracks[0].id)
+    }
 }

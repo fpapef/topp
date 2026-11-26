@@ -126,6 +126,9 @@ data class UiState(
     val recentering: Boolean = false,
     val gesturesActive: Boolean = false,
     val follow: FollowUi = FollowUi(),
+    /** Objectifs arrière proposés (1x, 3x, 5x) ; vide pour la frontale. */
+    val lenses: List<Float> = emptyList(),
+    val zoom: Float = 1f,
 )
 
 interface UiActions {
@@ -139,6 +142,7 @@ interface UiActions {
     fun follow()
     /** Toucher une personne : (x, y) dans l'image analysée, non retournée. */
     fun pickPerson(x: Float, y: Float)
+    fun lens(z: Float)
 }
 
 fun statusLabel(s: GimbalBle.Status, recentering: Boolean) = when {
@@ -201,10 +205,22 @@ fun ToppHud(state: UiState, actions: UiActions, preview: @Composable () -> Unit)
             RecTimer(state.recSeconds, Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(top = 22.dp))
         }
 
+        val showLenses = state.lenses.size > 1
+        if (showLenses && !portrait) {
+            LensPill(
+                state.lenses, state.zoom, state.follow.autoZoom, actions::lens,
+                Modifier.align(Alignment.BottomCenter).safeDrawingPadding().padding(bottom = 24.dp),
+            )
+        }
+
         Column(
             Modifier.align(Alignment.BottomStart).safeDrawingPadding().padding(start = 28.dp, bottom = 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            if (showLenses && portrait) {
+                LensPill(state.lenses, state.zoom, state.follow.autoZoom, actions::lens, Modifier)
+                Spacer(Modifier.height(16.dp))
+            }
             AttitudeDial(
                 relPan = state.relPan,
                 relTilt = state.relTilt,
@@ -256,6 +272,42 @@ fun ToppHud(state: UiState, actions: UiActions, preview: @Composable () -> Unit)
                 Spacer(Modifier.height(4.dp))
                 Text("Mode", style = hud(12.sp, FontWeight.Medium, Tk.SandDim))
             }
+        }
+    }
+}
+
+/** Choix de l'objectif arrière : 1x, 3x, 5x. L'objectif actif est en ambre. */
+@Composable
+fun LensPill(stops: List<Float>, zoom: Float, auto: Boolean, onPick: (Float) -> Unit, modifier: Modifier) {
+    val haptic = LocalHapticFeedback.current
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(
+            Modifier.clip(RoundedCornerShape(50)).background(Color(0x73000000)).padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            for (z in stops) {
+                val on = kotlin.math.abs(z - zoom) < 0.05f
+                Box(
+                    Modifier.size(38.dp).clip(CircleShape)
+                        .background(if (on) Color(0x33F2A93B) else Color.Transparent)
+                        .semantics { contentDescription = "Objectif ${lensLabel(z)}" }
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onPick(z)
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        lensLabel(z),
+                        style = hud(if (on) 14.sp else 13.sp, if (on) FontWeight.SemiBold else FontWeight.Medium,
+                            if (on) Tk.Amber else Tk.Sand, shadow = false),
+                    )
+                }
+            }
+        }
+        if (auto) {
+            Spacer(Modifier.height(5.dp))
+            Text("Zoom auto", style = hud(12.sp, FontWeight.Medium, Tk.Kinkeliba))
         }
     }
 }

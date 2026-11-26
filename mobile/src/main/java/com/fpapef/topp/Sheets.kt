@@ -47,6 +47,8 @@ data class SettingsValues(
     val gestureInvY: Boolean = false,
     val followMode: FollowMode = FollowMode.CAMERA_WATCH,
     val followGain: Float = 1f,
+    val followAutoZoom: Boolean = true,
+    val autoCorrectFront: Boolean = true,
 )
 
 interface SettingsActions {
@@ -61,6 +63,8 @@ interface SettingsActions {
     fun followGain(v: Float)
     fun followRelearn()
     fun followRecalibrate()
+    fun followAutoZoom(v: Boolean)
+    fun autoCorrectFront(v: Boolean)
     fun setHome()
     fun relearn()
     fun toggleConnection()
@@ -89,12 +93,19 @@ private fun Section(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit, detail: String? = null) {
     Row(
         Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, style = hud(16.sp, FontWeight.Normal, shadow = false), modifier = Modifier.weight(1f))
+        Column(Modifier.weight(1f)) {
+            Text(label, style = hud(16.sp, FontWeight.Normal, shadow = false))
+            if (detail != null) {
+                Spacer(Modifier.height(2.dp))
+                Text(detail, style = hud(13.sp, FontWeight.Normal, Tk.SandDim, shadow = false))
+            }
+        }
+        Spacer(Modifier.width(12.dp))
         Switch(
             checked = checked,
             onCheckedChange = onChange,
@@ -209,7 +220,12 @@ fun SettingsContent(v: SettingsValues, a: SettingsActions) {
                 Text("Douce", style = hud(12.sp, FontWeight.Normal, Tk.SandDim, shadow = false), modifier = Modifier.weight(1f))
                 Text("Vive", style = hud(12.sp, FontWeight.Normal, Tk.SandDim, shadow = false))
             }
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(6.dp))
+            ToggleRow(
+                "Zoom automatique", v.followAutoZoom, a::followAutoZoom,
+                detail = "Caméras arrière : passe au téléobjectif 3x ou 5x quand tu es loin, " +
+                    "revient au 1x quand tu te rapproches ou sors de l'image.",
+            )
             ActionRow("Recaler le GPS sur moi", onClick = a::followRecalibrate)
             Text(
                 "Suivi activé, mets-toi au centre de l'image à plus de 10 m, puis touche ici.",
@@ -275,6 +291,13 @@ fun SettingsContent(v: SettingsValues, a: SettingsActions) {
             Spacer(Modifier.height(6.dp))
             ToggleRow("Inverser gauche et droite", v.gestureInvX, a::gestureInvX)
             ToggleRow("Inverser haut et bas", v.gestureInvY, a::gestureInvY)
+        }
+        Section("Caméra frontale") {
+            ToggleRow(
+                "Correction automatique", v.autoCorrectFront, a::autoCorrectFront,
+                detail = "Inverse le haut et le bas du joystick et des gestes quand tu filmes avec la caméra frontale, " +
+                    "pour que vers le haut reste vers le haut à l'image.",
+            )
         }
         Section("Recentrage") {
             ActionRow("Définir la position actuelle comme centre", onClick = a::setHome)

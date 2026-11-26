@@ -52,6 +52,16 @@ class Controller(
         get() = prefs.getBoolean("gInvY", false)
         set(v) = prefs.edit().putBoolean("gInvY", v).apply()
 
+    /**
+     * Caméra frontale : le moteur du tilt penche tout le téléphone, donc quand l'objectif arrière
+     * monte, l'objectif frontal descend. Avec la correction automatique, on inverse le haut et le bas
+     * du joystick et des gestes pour que « vers le haut » reste vers le haut à l'image.
+     */
+    var autoCorrectFront: Boolean
+        get() = prefs.getBoolean("autoFront", true)
+        set(v) = prefs.edit().putBoolean("autoFront", v).apply()
+    @Volatile var frontCamera = false
+
     val homePan: Float get() = prefs.getFloat("homePan", 180f)
     val homeTilt: Float get() = prefs.getFloat("homeTilt", 91.3f)
 
@@ -64,6 +74,13 @@ class Controller(
 
     private fun curve(v: Float) = 0.3f * v + 0.7f * v * abs(v)
 
+    /** Décalage envoyé à la nacelle pour une position du joystick (ou des gestes). */
+    internal fun offsetFor(x: Float, y: Float): Pair<Float, Float> {
+        val sx = if (invertX) -1f else 1f
+        val sy = (if (invertY) -1f else 1f) * (if (frontCamera && autoCorrectFront) -1f else 1f)
+        return sx * curve(x) * speed to sy * curve(y) * speed
+    }
+
     fun start() = scope.launch {
         var was = false
         var clears = 0
@@ -75,9 +92,8 @@ class Controller(
             val y = if (fresh) jy else 0f
             val on = abs(x) > 0.05f || abs(y) > 0.05f
             if (on) {
-                val sx = if (invertX) -1f else 1f
-                val sy = if (invertY) -1f else 1f
-                ble.sendTrack(Hohem.trackOffset(sx * curve(x) * speed, sy * curve(y) * speed))
+                val (ox, oy) = offsetFor(x, y)
+                ble.sendTrack(Hohem.trackOffset(ox, oy))
                 clears = 3
             } else if (clears > 0) {
                 ble.sendTrack(Hohem.trackClear())

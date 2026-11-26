@@ -18,6 +18,11 @@ Pilote la nacelle **Hohem iSteady V3** depuis ta **Galaxy Watch**, sans l'appli 
 - S'il y a plusieurs personnes, la montre te reconnaît : fais coucou avec la main qui porte la montre, Topp compare tes mouvements de poignet à ceux de chaque personne à l'image. Tu peux aussi toucher quelqu'un à l'écran pour le suivre.
 - Si tu sors de l'image, le GPS de la montre prend le relais : la nacelle vise ta position jusqu'à ce que la caméra te retrouve.
 - Dans les réglages, trois modes : **Caméra + montre** (par défaut), **Caméra seule**, ou **GPS seul** pour l'extérieur à plus de 10 m.
+- Avec les caméras arrière, le **zoom automatique** passe au téléobjectif (3x, puis 5x) quand tu es loin, et revient au 1x quand tu te rapproches, bouges vite ou sors de l'image. C'est un vrai changement d'objectif, pas un zoom numérique.
+
+**Objectifs et caméra frontale**
+- Boutons 1x, 3x et 5x sur l'écran pour choisir l'objectif arrière (le grand-angle 0,6x n'est pas proposé).
+- Avec la caméra frontale, le haut et le bas du joystick et des gestes sont inversés automatiquement, pour que « vers le haut » reste vers le haut à l'image. Réglage « Correction automatique » pour la couper.
 
 ![Le suivi sur le téléphone et la montre](docs/suivi.png)
 
@@ -94,6 +99,7 @@ Les écrans sont vérifiés par des captures générées sans appareil (Robolect
 
 ## Versions
 
+- **1.5** : choix de l'objectif arrière (1x, 3x, 5x), zoom automatique par changement d'objectif pendant le suivi, correction automatique du haut et du bas en caméra frontale.
 - **1.4.1** : détection des personnes plus fiable (secours par l'aperçu, appli non compressée), message clair à l'écran et au journal si la détection ne marche pas.
 - **1.4** : suivi de la personne par la caméra, reconnaissance par la montre, GPS de la montre en renfort, trois modes au choix.
 - **1.3** : pilotage par les gestes du poignet (un appui ou maintenir), bouton Changer de caméra sur la montre.

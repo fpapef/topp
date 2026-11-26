@@ -7,6 +7,7 @@ import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -22,6 +23,7 @@ import org.robolectric.annotation.Config
 class FollowFlowTest {
     private lateinit var follow: Follow
     private lateinit var ble: GimbalBle
+    private lateinit var controller: Controller
     private val logs = mutableListOf<String>()
 
     @Before
@@ -32,7 +34,7 @@ class FollowFlowTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         ble = GimbalBle(ctx, scope) { logs += it }
         ble.state.value = GimbalBle.State(status = GimbalBle.Status.READY)
-        val controller = Controller(ble, scope, prefs) { logs += it }
+        controller = Controller(ble, scope, prefs) { logs += it }
         follow = Follow(ctx, ble, controller, scope, prefs) { logs += it }
     }
 
@@ -88,5 +90,61 @@ class FollowFlowTest {
     private fun followStatus(): FollowStatus {
         follow.onFrame(SystemClock.elapsedRealtime() + 1, emptyList(), false, 16f / 9f) // publie l'état
         return follow.ui.value.status
+    }
+
+    @Test
+    fun cameraFrontaleInverseLeHautEtLeBas() {
+        val (x0, y0) = controller.offsetFor(0.5f, 0.5f)
+        controller.frontCamera = true
+        val (x1, y1) = controller.offsetFor(0.5f, 0.5f)
+        assertEquals(x0, x1, 1e-6f)
+        assertEquals(-y0, y1, 1e-6f)
+        // Correction coupée dans les réglages : même sens qu'à l'arrière
+        controller.autoCorrectFront = false
+        assertEquals(y0, controller.offsetFor(0.5f, 0.5f).second, 1e-6f)
+        // Le réglage « Inverser haut et bas » reste appliqué par-dessus
+        controller.autoCorrectFront = true
+        controller.invertY = true
+        assertEquals(y0, controller.offsetFor(0.5f, 0.5f).second, 1e-6f)
+    }
+
+    @Test
+    fun zoomAutoPendantLeSuivi() {
+        val zooms = mutableListOf<Float>()
+        val job = kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined).launch { follow.zoomRequest.collect { zooms += it } }
+        follow.setLensStops(listOf(1f, 3f, 5f), 1f)
+        assertTrue(follow.start())
+        val t0 = SystemClock.elapsedRealtime()
+        // Une personne petite et centrée pendant 2 s : demande du 3x
+        var t = t0
+        for (i in 0 until 40) {
+            t = t0 + i * 50L
+            follow.onFrame(t, listOf(small(0.5f, 1f)), false, 16f / 9f)
+            follow.step(t + 10, false)
+        }
+        assertEquals(listOf(3f), zooms)
+        assertEquals(null, follow.step(t + 20, false)) // nacelle à l'arrêt pendant le changement
+        follow.onZoomStarting(byUser = false)
+        follow.onZoomApplied(1f, 3f)
+        // Après le changement, la même personne, trois fois plus grande, est toujours la cible
+        val t1 = SystemClock.elapsedRealtime() + 300
+        for (i in 0 until 6) follow.onFrame(t1 + i * 50L, listOf(small(0.5f, 3f)), false, 16f / 9f)
+        assertNotNull(follow.step(t1 + 320, false))
+        assertEquals(FollowStatus.CAMERA, followStatus())
+        assertTrue(follow.ui.value.autoZoom)
+        job.cancel()
+    }
+
+    /** Personne debout au centre, haute de 15 % de l'image à 1x, grossie de [k]. */
+    private fun small(cx: Float, k: Float): Detection {
+        fun y(v: Float) = 0.42f + (v - 0.42f) * k
+        fun x(v: Float) = cx + (v - cx) * k
+        val lm = MutableList(33) { Lm(cx, y(0.47f), 0.1f) }
+        lm[0] = Lm(cx, y(0.39f), 0.99f)
+        lm[11] = Lm(x(cx + 0.012f), y(0.42f), 0.99f); lm[12] = Lm(x(cx - 0.012f), y(0.42f), 0.99f)
+        lm[23] = Lm(x(cx + 0.01f), y(0.47f), 0.99f); lm[24] = Lm(x(cx - 0.01f), y(0.47f), 0.99f)
+        lm[27] = Lm(x(cx + 0.01f), y(0.535f), 0.9f); lm[28] = Lm(x(cx - 0.01f), y(0.535f), 0.9f)
+        lm[15] = Lm(x(cx + 0.025f), y(0.46f), 0.9f); lm[16] = Lm(x(cx - 0.025f), y(0.46f), 0.9f)
+        return detectionOf(lm)!!
     }
 }

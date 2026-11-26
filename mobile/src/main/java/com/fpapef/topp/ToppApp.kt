@@ -40,6 +40,8 @@ class ToppApp : Application() {
         private set
     lateinit var follow: Follow
         private set
+    lateinit var lenses: Lenses
+        private set
 
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
 
@@ -54,6 +56,7 @@ class ToppApp : Application() {
         ble = GimbalBle(this, scope, ::log)
         controller = Controller(ble, scope, prefs, ::log)
         follow = Follow(this, ble, controller, scope, prefs, ::log)
+        lenses = Lenses(this, follow, ::log)
         wear = WearBridge(
             this, scope,
             onJoystick = controller::joystick,

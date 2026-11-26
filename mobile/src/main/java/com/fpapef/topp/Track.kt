@@ -209,6 +209,26 @@ class Track internal constructor(val id: Int, d: Detection, t: Long) {
         seenAt = t
     }
 
+    /**
+     * Changement d'objectif : l'image grossit de [k] autour de son centre. On déplace la personne
+     * d'autant pour la reconnaître dans les images suivantes, et on la considère vue à [t].
+     */
+    internal fun rescale(k: Float, t: Long) {
+        fun p(v: Pt?) = v?.let { Pt(0.5f + (it.x - 0.5f) * k, 0.5f + (it.y - 0.5f) * k) }
+        fun c(v: Float) = 0.5f + (v - 0.5f) * k
+        val d = det
+        det = Detection(
+            Box(c(d.box.l), c(d.box.t), c(d.box.r), c(d.box.b)), p(d.aim)!!, p(d.wristL), p(d.wristR),
+            d.scale * k, d.sig, d.aspect,
+        )
+        sAim = p(sAim)!!
+        sL = p(sL)
+        sR = p(sR)
+        vx *= k
+        vy *= k
+        seenAt = t
+    }
+
     /** Position du point visé, prolongée par la vitesse (au plus 0,4 s). */
     fun predicted(t: Long): Pt {
         val dt = ((t - seenAt) / 1000f).coerceIn(0f, 0.4f)
@@ -252,6 +272,59 @@ class PeopleTracker(private val forgetMs: Long = 1_200) {
     }
 
     fun clear() = list.clear()
+
+    /** L'image a grossi de [k] (changement d'objectif) : on recale toutes les personnes. */
+    fun rescale(k: Float, t: Long) = list.forEach { it.rescale(k, t) }
+}
+
+/**
+ * Zoom automatique du suivi : passe à l'objectif suivant quand le sujet est petit et bien centré,
+ * revient en arrière quand il grandit ou s'approche du bord. Les arrêts possibles sont les objectifs
+ * du téléphone (1x, 3x, 5x). Le choix tient compte du temps, pour ne pas changer sans arrêt.
+ */
+class AutoZoom {
+    private var smallSince = 0L
+    private var bigSince = 0L
+    var lastChange = -100_000L
+
+    fun reset() { smallSince = 0L; bigSince = 0L; lastChange = -100_000L }
+
+    /**
+     * [h] hauteur du sujet (fraction de l'image), [wx], [wy] écart au centre, [speed] vitesse du
+     * sujet dans l'image (fraction par seconde). Renvoie le zoom voulu, ou null pour ne rien changer.
+     */
+    fun update(t: Long, stops: List<Float>, zoom: Float, h: Float, wx: Float, wy: Float, speed: Float): Float? {
+        if (stops.size < 2) return null
+        val i = stops.indices.minBy { abs(stops[it] - zoom) }
+        val edge = abs(wx) > 0.33f || abs(wy) > 0.36f
+        if (i > 0 && (h > 0.8f || edge)) {
+            smallSince = 0L
+            if (bigSince == 0L) bigSince = t
+            if (t - bigSince >= (if (edge) 250 else 600) && t - lastChange > 800) {
+                bigSince = 0L
+                // Au bord : on prend le plus large ; trop gros : l'objectif qui le fait tenir
+                return if (edge) stops[0]
+                else stops.take(i).lastOrNull { h * it / zoom <= 0.65f } ?: stops[0]
+            }
+            return null
+        }
+        bigSince = 0L
+        val next = stops.getOrNull(i + 1)
+        if (next != null && h < 0.3f && h * next / zoom <= 0.65f && abs(wx) < 0.15f && abs(wy) < 0.25f && speed < 0.15f) {
+            if (smallSince == 0L) smallSince = t
+            if (t - smallSince >= 1_500 && t - lastChange > 3_000) { smallSince = 0L; return next }
+        } else {
+            smallSince = 0L
+        }
+        return null
+    }
+}
+
+/** Libellé d'un objectif : 1x, 3x, 0,6x. */
+fun lensLabel(z: Float): String {
+    val r = kotlin.math.round(z * 10f) / 10f
+    val s = if (r == kotlin.math.floor(r)) r.toInt().toString() else r.toString().replace('.', ',')
+    return s + "x"
 }
 
 /** Corrélation entre l'agitation de la montre (gyroscope) et celle d'un poignet à l'image. */
