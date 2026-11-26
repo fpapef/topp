@@ -20,7 +20,7 @@ android {
         applicationId = "com.fpapef.topp"
         minSdk = 31
         targetSdk = 36
-        versionCode = 10
+        versionCode = 14
         versionName = "1.6"
         // MediaPipe embarque une bibliothèque native par architecture : les téléphones récents sont en arm64
         ndk { abiFilters += "arm64-v8a" }
