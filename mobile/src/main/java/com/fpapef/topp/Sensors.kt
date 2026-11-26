@@ -52,20 +52,27 @@ class PhoneSensors(private val ctx: Context) : SensorEventListener {
         }
     }
 
-    fun start() {
+    private val users = HashSet<String>()
+
+    /** Les capteurs d'orientation tournent tant qu'au moins un utilisateur les demande (suivi, écran). */
+    @Synchronized
+    fun acquire(who: String) {
+        users += who
         if (running || sm == null) return
         running = true
         game?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         rot?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
     }
 
-    fun stop() {
-        if (running) sm?.unregisterListener(this)
+    @Synchronized
+    fun release(who: String) {
+        users -= who
+        if (users.isNotEmpty() || !running) return
+        sm?.unregisterListener(this)
         running = false
         gameAt = 0L
         hasMag = false
         compass.reset()
-        stopLocation()
     }
 
     @SuppressLint("MissingPermission")

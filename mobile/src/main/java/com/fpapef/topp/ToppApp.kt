@@ -42,6 +42,8 @@ class ToppApp : Application() {
         private set
     lateinit var lenses: Lenses
         private set
+    lateinit var sensors: PhoneSensors
+        private set
 
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
 
@@ -54,9 +56,10 @@ class ToppApp : Application() {
         super.onCreate()
         val prefs = getSharedPreferences("topp", MODE_PRIVATE)
         ble = GimbalBle(this, scope, ::log)
-        controller = Controller(ble, scope, prefs, ::log)
-        follow = Follow(this, ble, controller, scope, prefs, ::log)
-        lenses = Lenses(this, follow, ::log)
+        sensors = PhoneSensors(this)
+        controller = Controller(ble, scope, prefs, ::log, sensors)
+        follow = Follow(this, ble, controller, scope, prefs, ::log, sensors)
+        lenses = Lenses(this, follow, scope, ::log)
         wear = WearBridge(
             this, scope,
             onJoystick = controller::joystick,

@@ -19,6 +19,8 @@ class Controller(
     private val scope: CoroutineScope,
     private val prefs: SharedPreferences,
     private val log: (String) -> Unit,
+    /** Gyroscope du téléphone : vérifie dans quel sens la caméra bouge vraiment. */
+    var sensors: PhoneSensors? = null,
 ) {
     @Volatile private var jx = 0f
     @Volatile private var jy = 0f
@@ -53,14 +55,34 @@ class Controller(
         set(v) = prefs.edit().putBoolean("gInvY", v).apply()
 
     /**
-     * Caméra frontale : le moteur du tilt penche tout le téléphone, donc quand l'objectif arrière
-     * monte, l'objectif frontal descend. Avec la correction automatique, on inverse le haut et le bas
-     * du joystick et des gestes pour que « vers le haut » reste vers le haut à l'image.
+     * Correction automatique : le haut et le bas du joystick et des gestes font bouger l'image
+     * dans le même sens avec la caméra frontale qu'avec les caméras arrière.
+     * Le moteur du tilt penche tout le téléphone : quand l'objectif arrière monte, le frontal descend.
+     * Topp ne se contente pas de le supposer : pendant que tu pilotes, le gyroscope du téléphone
+     * mesure dans quel sens la caméra active bouge vraiment, et le sens est corrigé s'il le faut.
      */
     var autoCorrectFront: Boolean
         get() = prefs.getBoolean("autoFront", true)
         set(v) = prefs.edit().putBoolean("autoFront", v).apply()
     @Volatile var frontCamera = false
+
+    /**
+     * Réponse mesurée de la caméra à une commande y positive : +1 elle monte, −1 elle descend.
+     * Valeurs par défaut tirées de la mécanique : arrière −1, frontale +1.
+     */
+    private fun response(front: Boolean) = prefs.getInt(if (front) "vr_f" else "vr_b", if (front) 1 else -1)
+
+    /** Sens vertical appliqué : les caméras arrière servent de référence (+1), la frontale s'y aligne. */
+    internal fun verticalSign(): Int =
+        if (!frontCamera || !autoCorrectFront) 1 else response(false) * response(true)
+
+    // Mesure en cours : une poussée verticale franche et continue
+    private var pushSign = 0
+    private var pushStart = 0L
+    private var pushEl0 = 0f
+    private var pushDone = false
+    private var pushFront = false
+    private var disagree = 0
 
     val homePan: Float get() = prefs.getFloat("homePan", 180f)
     val homeTilt: Float get() = prefs.getFloat("homeTilt", 91.3f)
@@ -77,9 +99,40 @@ class Controller(
     /** Décalage envoyé à la nacelle pour une position du joystick (ou des gestes). */
     internal fun offsetFor(x: Float, y: Float): Pair<Float, Float> {
         val sx = if (invertX) -1f else 1f
-        val sy = (if (invertY) -1f else 1f) * (if (frontCamera && autoCorrectFront) -1f else 1f)
+        val sy = (if (invertY) -1f else 1f) * verticalSign()
         return sx * curve(x) * speed to sy * curve(y) * speed
     }
+
+    /**
+     * Pendant une poussée surtout verticale d'au moins 0,45 s, on regarde de combien la caméra
+     * a monté ou baissé. Deux mesures d'affilée contraires à ce qu'on croyait : on corrige.
+     */
+    internal fun observe(t: Long, cmdX: Float, cmdY: Float, elevation: Float?) {
+        if (elevation == null) { pushSign = 0; return }
+        val s = if (abs(cmdY) > 0.06f && abs(cmdY) > abs(cmdX) * 1.5f) (if (cmdY > 0) 1 else -1) else 0
+        if (s == 0 || s != pushSign || pushFront != frontCamera) {
+            pushSign = s
+            pushStart = t
+            pushEl0 = elevation
+            pushDone = false
+            pushFront = frontCamera
+            return
+        }
+        if (pushDone || t - pushStart < 450) return
+        pushDone = true
+        val dEl = elevation - pushEl0
+        if (abs(dEl) < 1.5f) return // en butée, ou la nacelle ne répond pas : on ne conclut rien
+        val measured = if (dEl > 0) s else -s
+        val key = if (frontCamera) "vr_f" else "vr_b"
+        if (measured == response(frontCamera)) { disagree = 0; return }
+        if (++disagree < 2) return
+        disagree = 0
+        prefs.edit().putInt(key, measured).apply()
+        log(
+            "Sens haut/bas corrigé avec le gyroscope (caméra ${if (frontCamera) "frontale" else "arrière"})"
+        )
+    }
+
 
     fun start() = scope.launch {
         var was = false
@@ -94,6 +147,7 @@ class Controller(
             if (on) {
                 val (ox, oy) = offsetFor(x, y)
                 ble.sendTrack(Hohem.trackOffset(ox, oy))
+                if (autoCorrectFront) observe(SystemClock.elapsedRealtime(), ox, oy, sensors?.orientation(frontCamera)?.second)
                 clears = 3
             } else if (clears > 0) {
                 ble.sendTrack(Hohem.trackClear())

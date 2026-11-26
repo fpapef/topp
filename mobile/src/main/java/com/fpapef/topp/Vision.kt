@@ -24,6 +24,7 @@ import kotlin.math.min
 class Vision(
     private val ctx: Context,
     private val follow: Follow,
+    private val lenses: Lenses,
     private val log: (String) -> Unit,
 ) : ImageAnalysis.Analyzer {
     @Volatile var front = false
@@ -73,7 +74,7 @@ class Vision(
             analysisAt = SystemClock.elapsedRealtime()
             if (!wanted) return
             note("flux d'analyse ${image.width}×${image.height}, rotation ${image.imageInfo.rotationDegrees}°")
-            run(upright(image))
+            run(upright(image), lenses.zoomForFrame(image.imageInfo.timestamp))
         } catch (e: Throwable) {
             fail(e)
         } finally {
@@ -92,7 +93,7 @@ class Vision(
                 postScale(s, s)
                 if (front) postScale(-1f, 1f) // on remet l'image à l'endroit, comme le flux d'analyse
             }
-            run(Bitmap.createBitmap(shot, 0, 0, shot.width, shot.height, m, true))
+            run(Bitmap.createBitmap(shot, 0, 0, shot.width, shot.height, m, true), lenses.lastResultZoom)
         } catch (e: Throwable) {
             fail(e)
         } finally {
@@ -100,7 +101,7 @@ class Vision(
         }
     }
 
-    private fun run(bmp: Bitmap) {
+    private fun run(bmp: Bitmap, zoom: Float) {
         val lm = ensure() ?: return
         val t = SystemClock.elapsedRealtime()
         val ts = max(t, lastTs + 1)
@@ -122,7 +123,7 @@ class Vision(
                 )
             }
         }
-        follow.onFrame(t, dets, front, w.toFloat() / h)
+        follow.onFrame(t, dets, front, w.toFloat() / h, zoom)
         if (errors > 0 || follow.visionError != null) { errors = 0; follow.visionError = null }
     }
 

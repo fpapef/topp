@@ -7,18 +7,30 @@ import android.hardware.camera2.CameraManager
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import java.util.concurrent.Executor
+import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.exp
+import kotlin.math.ln
 import kotlin.math.sqrt
 
 /**
  * Objectifs arrière : principal (1x) et téléobjectifs (3x, 5x), sans l'ultra grand-angle.
  * On passe par le zoom de la caméra arrière « combinée » : le téléphone bascule lui-même
- * sur le bon objectif (3x et 5x sur le S25 Ultra), même pendant l'enregistrement.
+ * sur le bon objectif au bon moment. Le zoom glisse en douceur d'un objectif à l'autre,
+ * comme dans l'appareil photo, au lieu de sauter.
  */
-class Lenses(private val ctx: Context, private val follow: Follow, private val log: (String) -> Unit) {
+class Lenses(
+    private val ctx: Context,
+    private val follow: Follow,
+    private val scope: CoroutineScope,
+    private val log: (String) -> Unit,
+) {
     val stops = MutableStateFlow<List<Float>>(emptyList())
+    /** Objectif choisi (celui qui s'allume à l'écran). */
     val zoom = MutableStateFlow(1f)
 
     private var camera: Camera? = null
@@ -26,12 +38,27 @@ class Lenses(private val ctx: Context, private val follow: Follow, private val l
     private var physicalLabels: Map<String, String> = emptyMap()
     @Volatile private var activePhysical: String? = null
     private var rangeLogged = false
+    private var anim: Job? = null
+    /** Dernier zoom demandé à la caméra (il bouge pendant la transition). */
+    @Volatile var applied = 1f
+        private set
+
+    // Zoom réel de chaque image, d'après les résultats de capture (horodatage capteur → zoom)
+    private val stamps = LongArray(96)
+    private val ratios = FloatArray(96)
+    private var head = 0
+    @Volatile var lastResultZoom = 1f
+        private set
 
     /** Caméra tout juste liée. */
     fun attach(cam: Camera, isFront: Boolean) {
+        anim?.cancel()
         camera = cam
         front = isFront
         zoom.value = 1f
+        applied = 1f
+        lastResultZoom = 1f
+        synchronized(stamps) { stamps.fill(0L); head = 0 }
         activePhysical = null
         rangeLogged = false
         stops.value = emptyList()
@@ -52,35 +79,73 @@ class Lenses(private val ctx: Context, private val follow: Follow, private val l
         }
         if (!rangeLogged && !front) {
             rangeLogged = true
-            log("Caméra arrière : zoom de ${fmt(min)} à ${fmt(max)}" +
+            log("Caméra arrière : zoom de ${lensLabel(min)} à ${lensLabel(max)}" +
                 if (list.size > 1) ", objectifs proposés ${list.joinToString(" ") { lensLabel(it) }}" else "")
         }
     }
 
-    /** Change d'objectif. [byUser] : choisi à l'écran (met le zoom automatique en pause). */
-    fun set(z: Float, byUser: Boolean, executor: Executor) {
+    /**
+     * Change d'objectif en glissant vers [z] (0,3 à 0,7 s selon l'écart, accéléré puis freiné).
+     * [byUser] : choisi à l'écran (met le zoom automatique du suivi en pause).
+     */
+    fun set(z: Float, byUser: Boolean) {
         val cam = camera ?: return
-        val old = zoom.value
-        if (abs(old - z) < 0.01f) { if (!byUser) follow.onZoomFailed(); return }
-        follow.onZoomStarting(byUser)
-        val f = cam.cameraControl.setZoomRatio(z)
-        f.addListener({
-            if (runCatching { f.get() }.isSuccess) {
-                zoom.value = z
-                follow.onZoomApplied(old, z)
-            } else {
-                follow.onZoomFailed()
+        val from = applied
+        if (abs(from - z) < 0.01f && anim?.isActive != true) {
+            zoom.value = z
+            follow.onZoomDone(z)
+            return
+        }
+        anim?.cancel()
+        zoom.value = z
+        follow.onZoomStarting(byUser, z)
+        anim = scope.launch {
+            val span = abs(ln(z / from))
+            val duration = (180f + 300f * span).coerceIn(250f, 750f)
+            val t0 = System.nanoTime()
+            while (true) {
+                val u = ((System.nanoTime() - t0) / 1e6f / duration).coerceIn(0f, 1f)
+                val e = u * u * (3f - 2f * u) // départ et arrivée en douceur
+                val r = if (u >= 1f) z else from * exp(ln(z / from) * e) // progression régulière à l'œil
+                applied = r
+                cam.cameraControl.setZoomRatio(r)
+                if (u >= 1f) break
+                delay(16)
             }
-        }, executor)
+            follow.onZoomDone(z)
+        }
     }
 
-    /** Objectif réellement utilisé par le téléphone, d'après chaque image (pour le journal). */
-    fun onActivePhysical(id: String?) {
-        if (id == null || id == activePhysical) return
-        activePhysical = id
-        val label = physicalLabels[id] ?: return
-        log("Objectif utilisé : $label")
+    /** Résultat de capture : zoom réel de l'image prise à [timestampNs], et objectif utilisé. */
+    fun onCaptureResult(timestampNs: Long?, ratio: Float?, physicalId: String?) {
+        if (timestampNs != null && ratio != null) {
+            synchronized(stamps) {
+                stamps[head] = timestampNs
+                ratios[head] = ratio
+                head = (head + 1) % stamps.size
+            }
+            lastResultZoom = ratio
+        }
+        if (physicalId != null && physicalId != activePhysical) {
+            activePhysical = physicalId
+            physicalLabels[physicalId]?.let { log("Objectif utilisé : $it") }
+        }
     }
+
+    /** Zoom de l'image analysée prise à [timestampNs] ; à défaut, le dernier connu. */
+    fun zoomForFrame(timestampNs: Long): Float = synchronized(stamps) {
+        var best = -1
+        var bestDt = Long.MAX_VALUE
+        for (i in stamps.indices) {
+            val s = stamps[i]
+            if (s == 0L) continue
+            val dt = abs(s - timestampNs)
+            if (dt < bestDt) { bestDt = dt; best = i }
+        }
+        if (best >= 0 && bestDt < 5_000_000L) ratios[best] else lastResultZoomOr()
+    }
+
+    private fun lastResultZoomOr() = if (stamps.all { it == 0L }) applied else lastResultZoom
 
     /** Liste les objectifs derrière la caméra combinée, avec leur grossissement par rapport au principal. */
     @SuppressLint("UnsafeOptInUsageError")
@@ -110,6 +175,4 @@ class Lenses(private val ctx: Context, private val follow: Follow, private val l
             .joinToString(", "))
         labels
     }.getOrElse { emptyMap() }
-
-    private fun fmt(v: Float) = lensLabel(v)
 }

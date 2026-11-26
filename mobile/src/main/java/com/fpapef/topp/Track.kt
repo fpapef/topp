@@ -50,6 +50,16 @@ class Detection(
     val aspect: Float = 1f,
 )
 
+/**
+ * La même détection vue avec un zoom multiplié par [k] (grossissement autour du centre de l'image).
+ * Sert à ramener chaque image dans un repère « 1x », quel que soit l'objectif.
+ */
+fun Detection.scaled(k: Float): Detection {
+    fun c(v: Float) = 0.5f + (v - 0.5f) * k
+    fun p(v: Pt?) = v?.let { Pt(c(it.x), c(it.y)) }
+    return Detection(Box(c(box.l), c(box.t), c(box.r), c(box.b)), p(aim)!!, p(wristL), p(wristR), scale * k, sig, aspect)
+}
+
 /** Construit une détection à partir des 33 repères MediaPipe Pose. */
 fun detectionOf(lm: List<Lm>, pixels: IntArray? = null, w: Int = 0, h: Int = 0): Detection? {
     if (lm.size < 33) return null
@@ -209,26 +219,6 @@ class Track internal constructor(val id: Int, d: Detection, t: Long) {
         seenAt = t
     }
 
-    /**
-     * Changement d'objectif : l'image grossit de [k] autour de son centre. On déplace la personne
-     * d'autant pour la reconnaître dans les images suivantes, et on la considère vue à [t].
-     */
-    internal fun rescale(k: Float, t: Long) {
-        fun p(v: Pt?) = v?.let { Pt(0.5f + (it.x - 0.5f) * k, 0.5f + (it.y - 0.5f) * k) }
-        fun c(v: Float) = 0.5f + (v - 0.5f) * k
-        val d = det
-        det = Detection(
-            Box(c(d.box.l), c(d.box.t), c(d.box.r), c(d.box.b)), p(d.aim)!!, p(d.wristL), p(d.wristR),
-            d.scale * k, d.sig, d.aspect,
-        )
-        sAim = p(sAim)!!
-        sL = p(sL)
-        sR = p(sR)
-        vx *= k
-        vy *= k
-        seenAt = t
-    }
-
     /** Position du point visé, prolongée par la vitesse (au plus 0,4 s). */
     fun predicted(t: Long): Pt {
         val dt = ((t - seenAt) / 1000f).coerceIn(0f, 0.4f)
@@ -272,9 +262,6 @@ class PeopleTracker(private val forgetMs: Long = 1_200) {
     }
 
     fun clear() = list.clear()
-
-    /** L'image a grossi de [k] (changement d'objectif) : on recale toutes les personnes. */
-    fun rescale(k: Float, t: Long) = list.forEach { it.rescale(k, t) }
 }
 
 /**

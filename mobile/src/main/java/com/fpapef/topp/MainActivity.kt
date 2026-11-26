@@ -70,7 +70,7 @@ class MainActivity : ComponentActivity() {
     private var videoCapture: VideoCapture<Recorder>? = null
     private var analysis: ImageAnalysis? = null
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-    private val vision by lazy { Vision(applicationContext, app.follow, app::log) }
+    private val vision by lazy { Vision(applicationContext, app.follow, app.lenses, app::log) }
     private var orientationListener: OrientationEventListener? = null
     private var recording: Recording? = null
     private var lensFacing = CameraSelector.LENS_FACING_BACK
@@ -224,7 +224,7 @@ class MainActivity : ComponentActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    /** Note au journal l'objectif physique que le téléphone utilise vraiment (1x, 3x, 5x). */
+    /** Zoom réel de chaque image et objectif physique que le téléphone utilise vraiment (1x, 3x, 5x). */
     @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
     private fun watchActiveLens(pb: Preview.Builder) {
         if (android.os.Build.VERSION.SDK_INT < 29) return
@@ -234,12 +234,16 @@ class MainActivity : ComponentActivity() {
                 request: android.hardware.camera2.CaptureRequest,
                 result: android.hardware.camera2.TotalCaptureResult,
             ) {
-                app.lenses.onActivePhysical(result.get(android.hardware.camera2.CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID))
+                app.lenses.onCaptureResult(
+                    result.get(android.hardware.camera2.CaptureResult.SENSOR_TIMESTAMP),
+                    if (android.os.Build.VERSION.SDK_INT >= 30) result.get(android.hardware.camera2.CaptureResult.CONTROL_ZOOM_RATIO) else null,
+                    result.get(android.hardware.camera2.CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID),
+                )
             }
         })
     }
 
-    private fun setLens(z: Float, byUser: Boolean) = app.lenses.set(z, byUser, ContextCompat.getMainExecutor(this))
+    private fun setLens(z: Float, byUser: Boolean) = app.lenses.set(z, byUser)
 
     private fun switchCamera() {
         if (recording != null) { toast("Arrête l'enregistrement d'abord"); return }
@@ -309,11 +313,13 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         orientationListener?.takeIf { it.canDetectOrientation() }?.enable()
+        app.sensors.acquire("ecran") // gyroscope : sens réel du joystick et des gestes
     }
 
     override fun onPause() {
         super.onPause()
         orientationListener?.disable()
+        app.sensors.release("ecran")
     }
 
     override fun onDestroy() {

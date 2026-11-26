@@ -300,12 +300,11 @@ class TrackTest {
         var t = 0L
         for (i in 0 until 10) { t += 50; pt.update(t, listOf(detectionOf(person(0.55f, 0.4f, 0.2f))!!)) }
         val id = pt.tracks[0].id
-        // Passage de 1x à 3x : la personne grossit trois fois autour du centre
-        t += 400
-        pt.rescale(3f, t)
+        // Passage à 3x : la personne grossit trois fois autour du centre ; ramenée en repère 1x,
+        // c'est toujours la même
         val zoomed = detectionOf(person(0.5f + 0.05f * 3, 0.5f + (0.4f - 0.5f) * 3, 0.2f * 3))!!
         t += 50
-        val tracks = pt.update(t, listOf(zoomed))
+        val tracks = pt.update(t, listOf(zoomed.scaled(1f / 3f)))
         assertEquals(1, tracks.size)
         assertEquals(id, tracks[0].id)
     }

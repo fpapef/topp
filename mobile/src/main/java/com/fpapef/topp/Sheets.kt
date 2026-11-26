@@ -295,8 +295,8 @@ fun SettingsContent(v: SettingsValues, a: SettingsActions) {
         Section("Caméra frontale") {
             ToggleRow(
                 "Correction automatique", v.autoCorrectFront, a::autoCorrectFront,
-                detail = "Inverse le haut et le bas du joystick et des gestes quand tu filmes avec la caméra frontale, " +
-                    "pour que vers le haut reste vers le haut à l'image.",
+                detail = "Avec la caméra frontale, le joystick et les gestes vont dans le même sens qu'avec les caméras " +
+                    "arrière. Le gyroscope du téléphone vérifie le sens pendant que tu pilotes et le corrige tout seul.",
             )
         }
         Section("Recentrage") {

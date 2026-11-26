@@ -34,8 +34,8 @@ class FollowFlowTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         ble = GimbalBle(ctx, scope) { logs += it }
         ble.state.value = GimbalBle.State(status = GimbalBle.Status.READY)
-        controller = Controller(ble, scope, prefs) { logs += it }
-        follow = Follow(ctx, ble, controller, scope, prefs) { logs += it }
+        controller = Controller(ble, scope, prefs, log = { logs += it })
+        follow = Follow(ctx, ble, controller, scope, prefs, log = { logs += it })
     }
 
     private fun person(cx: Float): Detection {
@@ -88,7 +88,7 @@ class FollowFlowTest {
     }
 
     private fun followStatus(): FollowStatus {
-        follow.onFrame(SystemClock.elapsedRealtime() + 1, emptyList(), false, 16f / 9f) // publie l'état
+        follow.onFrame(SystemClock.elapsedRealtime() + 1, emptyList(), false, 16f / 9f, 3f) // publie l'état
         return follow.ui.value.status
     }
 
@@ -119,20 +119,59 @@ class FollowFlowTest {
         var t = t0
         for (i in 0 until 40) {
             t = t0 + i * 50L
-            follow.onFrame(t, listOf(small(0.5f, 1f)), false, 16f / 9f)
+            follow.onFrame(t, listOf(small(0.5f, 1f)), false, 16f / 9f, 1f)
             follow.step(t + 10, false)
         }
         assertEquals(listOf(3f), zooms)
-        assertEquals(null, follow.step(t + 20, false)) // nacelle à l'arrêt pendant le changement
-        follow.onZoomStarting(byUser = false)
-        follow.onZoomApplied(1f, 3f)
-        // Après le changement, la même personne, trois fois plus grande, est toujours la cible
-        val t1 = SystemClock.elapsedRealtime() + 300
-        for (i in 0 until 6) follow.onFrame(t1 + i * 50L, listOf(small(0.5f, 3f)), false, 16f / 9f)
-        assertNotNull(follow.step(t1 + 320, false))
+        // Pendant la transition (le zoom glisse de 1x à 3x), chaque image arrive avec son zoom :
+        // la nacelle continue de suivre la même personne, sans pause
+        follow.onZoomStarting(byUser = false, target = 3f)
+        for (i in 1..12) {
+            val z = 1f + 2f * i / 12f
+            t += 33
+            follow.onFrame(t, listOf(small(0.5f, z)), false, 16f / 9f, z)
+            assertNotNull("commande pendant la transition ($z)", follow.step(t + 5, false))
+        }
+        follow.onZoomDone(3f)
         assertEquals(FollowStatus.CAMERA, followStatus())
+        assertEquals(1, follow.ui.value.people.size)
+        // À l'écran, la personne est bien trois fois plus grande
+        assertEquals(0.157f * 3, follow.ui.value.people[0].box.h, 0.03f)
         assertTrue(follow.ui.value.autoZoom)
         job.cancel()
+    }
+
+    @Test
+    fun leGyroscopeCorrigeLeSensVertical() {
+        controller.frontCamera = true
+        assertEquals(-1, controller.verticalSign()) // par défaut : frontale inversée
+        // Sur cette nacelle, la caméra frontale répond comme l'arrière : commande y > 0 → elle descend
+        var t = 1_000L
+        var el = 0f
+        repeat(2) {
+            controller.observe(t, 0f, 0.3f, el)
+            t += 500; el -= 4f
+            controller.observe(t, 0f, 0.3f, el)
+            controller.observe(t + 50, 0f, 0f, el) // relâché
+            t += 1_000
+        }
+        assertEquals(1, controller.verticalSign())
+        assertTrue(logs.any { it.contains("corrigé avec le gyroscope") })
+        // Les caméras arrière restent la référence
+        controller.frontCamera = false
+        assertEquals(1, controller.verticalSign())
+    }
+
+    @Test
+    fun uneSeuleMesureNeSuffitPas() {
+        controller.frontCamera = true
+        controller.observe(0, 0f, 0.3f, 0f)
+        controller.observe(500, 0f, 0.3f, -4f)
+        assertEquals(-1, controller.verticalSign())
+        // En butée (presque aucun mouvement) : rien n'est appris
+        controller.observe(2_000, 0f, 0.3f, 0f)
+        controller.observe(2_600, 0f, 0.3f, 0.5f)
+        assertEquals(-1, controller.verticalSign())
     }
 
     /** Personne debout au centre, haute de 15 % de l'image à 1x, grossie de [k]. */

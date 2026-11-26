@@ -22,7 +22,7 @@ Pilote la nacelle **Hohem iSteady V3** depuis ta **Galaxy Watch**, sans l'appli 
 
 **Objectifs et caméra frontale**
 - Boutons 1x, 3x et 5x sur l'écran pour choisir l'objectif arrière (le grand-angle 0,6x n'est pas proposé).
-- Avec la caméra frontale, le haut et le bas du joystick et des gestes sont inversés automatiquement, pour que « vers le haut » reste vers le haut à l'image. Réglage « Correction automatique » pour la couper.
+- Avec la caméra frontale, le joystick et les gestes vont dans le même sens qu'avec les caméras arrière : le gyroscope du téléphone vérifie le sens pendant que tu pilotes et le corrige tout seul. Réglage « Correction automatique » pour la couper.
 
 ![Le suivi sur le téléphone et la montre](docs/suivi.png)
 
@@ -99,6 +99,7 @@ Les écrans sont vérifiés par des captures générées sans appareil (Robolect
 
 ## Versions
 
+- **1.5.1** : changement d'objectif en douceur sans arrêter le suivi ; le sens haut/bas en caméra frontale est vérifié et corrigé avec le gyroscope du téléphone.
 - **1.5** : choix de l'objectif arrière (1x, 3x, 5x), zoom automatique par changement d'objectif pendant le suivi, correction automatique du haut et du bas en caméra frontale.
 - **1.4.1** : détection des personnes plus fiable (secours par l'aperçu, appli non compressée), message clair à l'écran et au journal si la détection ne marche pas.
 - **1.4** : suivi de la personne par la caméra, reconnaissance par la montre, GPS de la montre en renfort, trois modes au choix.
